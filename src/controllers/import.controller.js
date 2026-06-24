@@ -1,6 +1,7 @@
 const importService = require('../services/import.service');
 const { supabase } = require('../config/supabase');
 const fs = require('fs');
+const xlsx = require('xlsx');
 
 exports.validate = async (req, res) => {
   const file = req.file;
@@ -119,5 +120,85 @@ exports.confirm = async (req, res) => {
   } catch (err) {
     console.error('Import confirmation error:', err);
     res.status(500).json({ message: 'Internal server error during import confirmation.' });
+  }
+};
+
+exports.traiterExcel = async (req, res) => {
+  const file = req.file;
+
+  if (!file) {
+    return res.status(400).json({ message: 'No file uploaded.' });
+  }
+
+  try {
+    const workbook = xlsx.readFile(file.path);
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = xlsx.utils.sheet_to_json(worksheet, { header: 1 });
+
+    let headerRowIndex = -1;
+    for (let i = 0; i < data.length; i++) {
+      const row = data[i];
+      if (row && Array.isArray(row) && row.includes('Nom') && row.includes('Prénom') && row.includes('Résultat')) {
+        headerRowIndex = i;
+        break;
+      }
+    }
+
+    if (headerRowIndex === -1) {
+      fs.unlinkSync(file.path);
+      return res.status(400).json({ message: "Le fichier ne correspond pas au format attendu (colonnes Nom, Prénom, Résultat introuvables)." });
+    }
+
+    const nomIndex = data[headerRowIndex].indexOf('Nom');
+    const prenomIndex = data[headerRowIndex].indexOf('Prénom');
+    const resultatIndex = data[headerRowIndex].indexOf('Résultat');
+    const colonne2Index = data[headerRowIndex].indexOf('Colonne2');
+
+    const normalizedData = [];
+    for (let i = headerRowIndex + 1; i < data.length; i++) {
+      const row = data[i];
+      if (!row || !Array.isArray(row) || row.length === 0) continue;
+
+      let nom = row[nomIndex] !== undefined ? row[nomIndex] : '';
+      let matricule = row[prenomIndex] !== undefined ? row[prenomIndex] : '';
+
+      nom = nom.toString().trim();
+      matricule = matricule.toString().trim();
+
+      if (!nom && !matricule) continue;
+
+      let note = '';
+      if (colonne2Index !== -1 && row[colonne2Index] !== undefined) {
+        note = row[colonne2Index];
+      } else if (resultatIndex !== -1 && row[resultatIndex] !== undefined) {
+        const resStr = row[resultatIndex].toString();
+        const match = resStr.match(/^([\d,.]+)/);
+        if (match) {
+          note = match[1].replace(',', '.');
+        }
+      }
+
+      normalizedData.push({
+        Matricule: matricule,
+        Nom: nom,
+        Note: note
+      });
+    }
+
+    const newWs = xlsx.utils.json_to_sheet(normalizedData);
+    const newWb = xlsx.utils.book_new();
+    xlsx.utils.book_append_sheet(newWb, newWs, "Notes");
+    const buffer = xlsx.write(newWb, { type: 'buffer', bookType: 'xlsx' });
+
+    fs.unlinkSync(file.path);
+
+    res.setHeader('Content-Disposition', 'attachment; filename="normalized.xlsx"');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buffer);
+  } catch (err) {
+    console.error('TeleEvaluation processing error:', err);
+    if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    res.status(500).json({ message: 'Erreur lors du traitement du fichier.', detail: err.message });
   }
 };

@@ -19,4 +19,9 @@ router.post('/confirm',
   importController.confirm
 );
 
+router.post('/traiter-excel',
+  upload.single('file'),
+  importController.traiterExcel
+);
+
 module.exports = router;

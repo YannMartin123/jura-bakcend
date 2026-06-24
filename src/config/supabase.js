@@ -10,7 +10,7 @@ if (!supabaseUrl || !supabaseUrl.startsWith('http')) {
 
 const supabase = createClient(
   supabaseUrl || 'https://placeholder.supabase.co', 
-  supabaseKey || 'placeholder'
+  supabaseKey || 'placeholderKey'
 );
 
 module.exports = {
