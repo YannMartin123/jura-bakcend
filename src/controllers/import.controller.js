@@ -2,6 +2,7 @@ const importService = require('../services/import.service');
 const { supabase } = require('../config/supabase');
 const fs = require('fs');
 const xlsx = require('xlsx');
+const { randomUUID } = require('crypto');
 
 exports.validate = async (req, res) => {
   const file = req.file;
@@ -52,14 +53,27 @@ exports.confirm = async (req, res) => {
     return res.status(400).json({ message: 'Missing required data (data, ecId, sessionId).' });
   }
 
+  // Un UUID unique identifiant ce lot d'import
+  const importBatchId = randomUUID();
+
   try {
     const results = [];
     const errors = [];
 
+    // Récupérer l'annee_id depuis la session
+    const { data: sessionData, error: sessionErr } = await supabase
+      .from('session_correction')
+      .select('annee_academique')
+      .eq('id_session', sessionId)
+      .single();
+
+    const anneeId = sessionData?.annee_academique || null;
+
     // Process in batches or one by one for better error tracking
     for (const item of data) {
       try {
-        let studentId;
+        let studentId = null;
+        const itemProblems = [];
 
         if (isAnonymous) {
           // Map anonymat code to studentId
@@ -71,10 +85,10 @@ exports.confirm = async (req, res) => {
             .single();
 
           if (mapErr || !mapping) {
-            errors.push(`Code anonymat ${item.anonymat} non trouvé pour cette EC.`);
-            continue;
+            itemProblems.push(`Code anonymat ${item.anonymat} non trouvé pour cette EC.`);
+          } else {
+            studentId = mapping.etudiant_id;
           }
-          studentId = mapping.etudiant_id;
         } else {
           // Find student by matricule
           const { data: student, error: stuErr } = await supabase
@@ -84,38 +98,78 @@ exports.confirm = async (req, res) => {
             .single();
 
           if (stuErr || !student) {
-            errors.push(`Matricule ${item.matricule} non trouvé.`);
-            continue;
+            itemProblems.push(`Matricule ${item.matricule} non trouvé.`);
+          } else {
+            studentId = student.id;
           }
-          studentId = student.id;
         }
 
-        // Upsert note
-        const { data: note, error: noteErr } = await supabase
-          .from('note')
-          .upsert({
-            etudiant_id: studentId,
-            ec_id: ecId,
-            session_id: sessionId,
-            value_cc: item.cc,
-            value_sn: item.sn,
-            value_tp: item.tp,
-            updated_at: new Date()
-          })
-          .select()
-          .single();
+        // Validate note scales
+        ['cc', 'sn', 'tp'].forEach(key => {
+          if (item[key] !== null && item[key] !== undefined) {
+            const val = parseFloat(item[key]);
+            if (!isNaN(val) && (val < 0 || val > 20)) {
+              itemProblems.push(`Note ${key.toUpperCase()} hors échelle (0-20): ${val}`);
+            }
+          }
+        });
 
-        if (noteErr) throw noteErr;
-        results.push(note);
+        if (itemProblems.length > 0) {
+          // ─── Enregistrer l'erreur dans import_error ───────────────────
+          const matriculeBrut = isAnonymous ? (item.anonymat || '') : (item.matricule || '');
+          const { error: errInsertErr } = await supabase
+            .from('import_error')
+            .upsert({
+              ec_id: parseInt(ecId),
+              session_id: parseInt(sessionId),
+              annee_id: anneeId,
+              etudiant_id: studentId,
+              matricule_brut: matriculeBrut,
+              problemes: itemProblems,
+              statut: 'EN_ERREUR',
+              date_detection: new Date().toISOString(),
+              date_resolution: null,
+              import_batch_id: importBatchId
+            }, { onConflict: 'ec_id,session_id,matricule_brut' });
+
+          if (errInsertErr) {
+            console.error('Erreur lors de l\'enregistrement dans import_error:', errInsertErr);
+          }
+
+          errors.push(...itemProblems);
+          continue; // Passer à l'élément suivant si des problèmes fondamentaux existent (étudiant introuvable)
+        }
+
+        // Upsert note (uniquement si l'étudiant a été trouvé)
+        if (studentId) {
+          const { data: note, error: noteErr } = await supabase
+            .from('note')
+            .upsert({
+              etudiant_id: studentId,
+              ec_id: ecId,
+              session_id: sessionId,
+              value_cc: item.cc,
+              value_sn: item.sn,
+              value_tp: item.tp,
+              updated_at: new Date()
+            })
+            .select()
+            .single();
+
+          if (noteErr) throw noteErr;
+          results.push(note);
+        }
       } catch (err) {
-        errors.push(`Erreur lors de l'enregistrement pour ${item.matricule || item.anonymat}: ${err.message}`);
+        const identifier = item.matricule || item.anonymat || 'inconnu';
+        errors.push(`Erreur lors de l'enregistrement pour ${identifier}: ${err.message}`);
       }
     }
 
     res.status(200).json({
       message: 'Import confirmed',
       importedCount: results.length,
-      errors: errors
+      errors: errors,
+      importBatchId
     });
   } catch (err) {
     console.error('Import confirmation error:', err);
