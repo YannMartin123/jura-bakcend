@@ -27,6 +27,7 @@ app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/import', require('./routes/import.routes'));
 app.use('/api/sessions', require('./routes/session.routes'));
 app.use('/api/notes', require('./routes/note.routes'));
+app.use('/api/pv', require('./routes/pv.routes'));
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
