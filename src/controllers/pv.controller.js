@@ -83,6 +83,10 @@ exports.generatePV = async (req, res) => {
     return res.status(400).json({ message: "Classe et UE sont requis pour generer le PV par UE" });
   }
 
+  if (type === 'cycle' && (!classe_id || !etudiant_id)) {
+    return res.status(400).json({ message: "Classe et etudiant sont requis pour generer le PV par cycle" });
+  }
+
   if (type === 'annuel' || type === 'recap_etudiant') {
     return res.status(501).json({
       message: "Ce type de PV n'est pas encore implemente cote serveur. Utilisez pour l'instant le PV par EC ou par UE."
@@ -90,7 +94,7 @@ exports.generatePV = async (req, res) => {
   }
 
   try {
-    const doc = new PDFDocument({ margin: 40, size: 'A4', layout: type === 'ue' ? 'landscape' : 'portrait' });
+    const doc = new PDFDocument({ margin: 40, size: 'A4', layout: (type === 'ue' || type === 'cycle') ? 'landscape' : 'portrait' });
     
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="PV_${type}_${Date.now()}.pdf"`);
@@ -369,6 +373,236 @@ exports.generatePV = async (req, res) => {
       ]];
 
       drawTable(doc, finalY + 15, statHeaders, statRows, statColWidths, startX);
+    }
+    else if (type === 'cycle') {
+      // ---------------------------------------------------------
+      // PV PAR CYCLE (LICENCE: L1, L2, L3 | MASTER: M1, M2)
+      // ---------------------------------------------------------
+      doc.fontSize(14).font("Helvetica-Bold");
+      doc.text("PROCES VERBAL PAR CYCLE", 0, 130, { align: "center" });
+
+      // Récupérer les informations de l'étudiant
+      const { data: etudiant } = await supabase
+        .from('etudiant')
+        .select('*')
+        .eq('id_etudiant', etudiant_id)
+        .single();
+      
+      if (!etudiant) throw new Error("Etudiant introuvable");
+
+      const nomComplet = `${etudiant.nom || ''} ${etudiant.prenom || ''}`.trim();
+      const matricule = etudiant.matricule || '-';
+
+      doc.fontSize(12).font("Helvetica");
+      doc.text(`Etudiant: ${nomComplet} (${matricule})`, 0, 150, { align: "center" });
+      doc.fontSize(10).font("Helvetica");
+      doc.text(`Filière : ${filiereStr}   |   Spécialité : ${specialiteStr}`, 0, 170, { align: "center" });
+      doc.text(`Grade : ${gradeStr}   |   Année académique : ${anneeText}`, 0, 185, { align: "center" });
+
+      // Déterminer le cycle basé sur le niveau
+      const niveauLower = (niveauStr || '').toLowerCase();
+      let cycle = '';
+      let niveauxCycle = [];
+
+      if (['l1', 'l2', 'l3'].includes(niveauLower)) {
+        cycle = 'LICENCE';
+        niveauxCycle = ['L1', 'L2', 'L3'];
+      } else if (['m1', 'm2'].includes(niveauLower)) {
+        cycle = 'MASTER';
+        niveauxCycle = ['M1', 'M2'];
+      } else {
+        throw new Error("Niveau non reconnu pour le tirage par cycle. Niveaux supportés: L1, L2, L3, M1, M2");
+      }
+
+      doc.fontSize(12).font("Helvetica-Bold");
+      doc.text(`CYCLE: ${cycle}`, 0, 210, { align: "center" });
+
+      // Récupérer toutes les classes du même cycle pour la filière/spécialité
+      const { data: classesCycle } = await supabase
+        .from('classe')
+        .select(`
+          id_classe,
+          nom_classe,
+          niveau ( id_niveau ),
+          specialite ( nom, filiere ( nom_filiere ) )
+        `)
+        .in('niveau.id_niveau', niveauxCycle);
+
+      if (!classesCycle || classesCycle.length === 0) {
+        throw new Error("Aucune classe trouvée pour ce cycle");
+      }
+
+      const classeIds = classesCycle.map(c => c.id_classe);
+
+      // Récupérer toutes les inscriptions de l'étudiant dans ces classes
+      const { data: inscriptions } = await supabase
+        .from('inscription')
+        .select(`
+          classe_id,
+          classe ( nom_classe, niveau ( id_niveau ) )
+        `)
+        .eq('etudiant_id', etudiant_id)
+        .in('classe_id', classeIds)
+        .eq('annee_id', annee_id);
+
+      if (!inscriptions || inscriptions.length === 0) {
+        throw new Error("Aucune inscription trouvée pour cet étudiant dans ce cycle");
+      }
+
+      // Organiser les données par niveau
+      const notesParNiveau = {};
+      niveauxCycle.forEach(n => notesParNiveau[n] = []);
+
+      // Pour chaque inscription, récupérer les UEs et les notes
+      for (const insc of inscriptions) {
+        const niveau = insc.classe?.niveau?.id_niveau?.toUpperCase() || '';
+        if (!niveauxCycle.includes(niveau)) continue;
+
+        // Récupérer les UEs pour cette classe
+        const { data: ues } = await supabase
+          .from('ue')
+          .select('id_ue, code_ue, intitule_ue, credits_ue')
+          .eq('classe_id', insc.classe_id);
+
+        if (!ues || ues.length === 0) continue;
+
+        // Récupérer les ECs pour chaque UE
+        for (const ue of ues) {
+          const { data: ecs } = await supabase
+            .from('ec')
+            .select('id_ec, code_ec, intitule_ec, credits_ec, has_cc, has_tp, has_sn')
+            .eq('ue_id', ue.id_ue);
+
+          if (!ecs || ecs.length === 0) continue;
+
+          const ecIds = ecs.map(e => e.id_ec);
+
+          // Récupérer les notes de l'étudiant pour ces ECs
+          const { data: notes } = await supabase
+            .from('note')
+            .select('*')
+            .in('ec_id', ecIds)
+            .eq('etudiant_id', etudiant_id)
+            .eq('annee_id', annee_id);
+
+          if (!notes || notes.length === 0) continue;
+
+          // Calculer la moyenne pour chaque EC
+          ecs.forEach(ec => {
+            const ecNotes = notes.filter(n => n.ec_id === ec.id_ec);
+            if (ecNotes.length > 0) {
+              const n = ecNotes[0];
+              const ccv = n.valeur_cc !== null ? Number(n.valeur_cc) : 0;
+              const tpv = n.valeur_tp !== null ? Number(n.valeur_tp) : 0;
+              const snv = n.valeur_sn !== null ? Number(n.valeur_sn) : 0;
+
+              let final20 = 0;
+              if (ec.has_cc && ec.has_tp && ec.has_sn) final20 = ccv + tpv + snv;
+              else if (ec.has_cc && ec.has_sn) final20 = ccv + snv;
+              else if (ec.has_tp && ec.has_sn) final20 = tpv + snv;
+              else if (ec.has_sn) final20 = snv;
+              else if (ec.has_cc) final20 = ccv;
+
+              const ecScore100 = (final20 / 20) * 100;
+              const ecScore4 = (final20 / 20) * 4; // Convertir en échelle /4.0
+              
+              notesParNiveau[niveau].push({
+                ue: ue.code_ue || '',
+                ue_intitule: ue.intitule_ue || '',
+                ec: ec.code_ec || '',
+                ec_intitule: ec.intitule_ec || '',
+                credits: ec.credits_ec || 0,
+                note: ecScore4, // Stocker en /4.0
+                note20: final20
+              });
+            }
+          });
+        }
+      }
+
+      // Calculer les MGP par niveau
+      const mgpParNiveau = {};
+      let cycleAdmis = true;
+
+      for (const niveau of niveauxCycle) {
+        const notes = notesParNiveau[niveau];
+        if (notes.length === 0) {
+          mgpParNiveau[niveau] = null;
+          cycleAdmis = false;
+          continue;
+        }
+
+        // Calculer la moyenne pondérée du niveau (échelle /4.0)
+        let totalCredits = 0;
+        let weightedSum = 0;
+
+        notes.forEach(note => {
+          weightedSum += note.note * note.credits;
+          totalCredits += note.credits;
+        });
+
+        const mgp = totalCredits > 0 ? weightedSum / totalCredits : 0;
+        mgpParNiveau[niveau] = mgp;
+
+        // Vérifier si MGP > 2.0 selon le système académique
+        // Note: null est différent de 0 - si MGP est null, l'étudiant n'est pas admis
+        if (mgp === null || mgp <= 2.0) {
+          cycleAdmis = false;
+        }
+      }
+
+      // Décision finale
+      const decision = cycleAdmis ? 'ADMIS' : 'AJOURNE';
+
+      // Afficher les résultats par niveau
+      let currentY = 240;
+      doc.fontSize(11).font("Helvetica-Bold");
+      doc.text("RESULTATS PAR NIVEAU", 40, currentY);
+      currentY += 20;
+
+      for (const niveau of niveauxCycle) {
+        const mgp = mgpParNiveau[niveau];
+        const observation = mgp !== null && mgp > 2.0 ? 'VALIDE' : 'NON VALIDÉ (MGP <= 2.0)';
+
+        doc.fontSize(10).font("Helvetica-Bold");
+        doc.text(`NIVEAU ${niveau}`, 40, currentY);
+        currentY += 15;
+
+        doc.fontSize(9).font("Helvetica");
+        doc.text(`MGP: ${mgp !== null ? mgp.toFixed(2) + '/4.0' : 'N/A (null)'}`, 50, currentY);
+        currentY += 12;
+        doc.text(`Observation: ${observation}`, 50, currentY);
+        currentY += 20;
+
+        // Détail des UE/EC pour ce niveau
+        const notes = notesParNiveau[niveau];
+        if (notes && notes.length > 0) {
+          const detailHeaders = ['UE', 'EC', 'Crédits', 'Note/4.0'];
+          const detailColWidths = [50, 80, 40, 50];
+          const detailRows = notes.map(n => [
+            n.ue,
+            n.ec,
+            n.credits.toString(),
+            n.note.toFixed(2) // Déjà en /4.0
+          ]);
+
+          currentY = drawTable(doc, currentY, detailHeaders, detailRows, detailColWidths, 50);
+          currentY += 15;
+        }
+      }
+
+      // Décision finale
+      currentY += 10;
+      doc.fontSize(12).font("Helvetica-Bold");
+      const decisionColor = decision === 'ADMIS' ? '#2e7d32' : '#c62828';
+      doc.fillColor(decisionColor);
+      doc.text(`DÉCISION FINALE: ${decision}`, 40, currentY);
+      doc.fillColor('#000000');
+
+      // Ajouter une note explicative
+      currentY += 20;
+      doc.fontSize(8).font("Helvetica");
+      doc.text("* Note: Un étudiant est ADMIS si sa MGP (Moyenne Générale Pondérée) de chaque niveau du cycle est > 2.0/4.0. null est différent de 0.", 40, currentY, { width: 500 });
     }
     else {
       doc.text("En cours de construction pour ce type (Annuel / Recap)");
