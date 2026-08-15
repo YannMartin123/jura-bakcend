@@ -19,42 +19,72 @@ const getGradeLocal = (score100) => {
   return 'F';
 };
 
+// FIX: resolution robuste du chemin du logo.
+// path.join(__dirname, '../../...') est fragile car il depend exactement de
+// l'emplacement du fichier controller. On essaie plusieurs chemins plausibles
+// et on logue clairement lesquels ont ete testes si aucun ne fonctionne,
+// au lieu d'echouer silencieusement.
+const getLogoPath = () => {
+  const candidates = [
+    path.join(__dirname, '../../ressources/images/uy1_logo.png'),
+    path.join(__dirname, '../ressources/images/uy1_logo.png'),
+    path.join(__dirname, '../../../ressources/images/uy1_logo.png'),
+    path.join(process.cwd(), 'ressources/images/uy1_logo.png'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  console.warn('Logo UY1 introuvable. Chemins testes:', candidates);
+  return null;
+};
+
 // Fonction pour tracer un tableau basique avec pdfkit
+// FIX: hauteur de ligne dynamique (gere le texte qui wrap sur plusieurs lignes)
+// + saut de page calcule AVANT de dessiner la ligne (evite qu'une ligne soit coupee entre 2 pages)
 const drawTable = (doc, startY, headers, rows, colWidths, startX = 40) => {
-  const rowHeight = 20;
+  const headerRowHeight = 20;
   let currentY = startY;
 
   // Header background
-  doc.rect(startX, currentY, colWidths.reduce((a,b)=>a+b,0), rowHeight).fillAndStroke('#2d3e50', '#2d3e50');
-  
+  doc.rect(startX, currentY, colWidths.reduce((a, b) => a + b, 0), headerRowHeight).fillAndStroke('#2d3e50', '#2d3e50');
+
   doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8);
   let currentX = startX;
   headers.forEach((h, i) => {
     doc.text(h, currentX, currentY + 6, { width: colWidths[i], align: 'center' });
     currentX += colWidths[i];
   });
-  
-  currentY += rowHeight;
+
+  currentY += headerRowHeight;
   doc.fillColor('#000000').font('Helvetica').fontSize(8);
 
   rows.forEach((row) => {
-    // Page break if needed
-    if (currentY > doc.page.height - 50) {
+    // Calcule la hauteur reelle necessaire pour cette ligne (gere le texte qui wrap)
+    const cellHeights = row.map((cell, i) => {
+      const text = cell !== null && cell !== undefined ? String(cell) : '-';
+      return doc.heightOfString(text, { width: colWidths[i] - 4 });
+    });
+    const rowHeight = Math.max(20, Math.max(...cellHeights) + 8);
+
+    // Saut de page si necessaire, calcule AVANT de dessiner la ligne
+    if (currentY + rowHeight > doc.page.height - 50) {
       doc.addPage();
       currentY = 40;
     }
-    
+
     currentX = startX;
-    doc.rect(startX, currentY, colWidths.reduce((a,b)=>a+b,0), rowHeight).stroke();
-    
+    doc.rect(startX, currentY, colWidths.reduce((a, b) => a + b, 0), rowHeight).stroke();
+
     row.forEach((cell, i) => {
       // Draw vertical line separators
       if (i > 0) {
         doc.moveTo(currentX, currentY).lineTo(currentX, currentY + rowHeight).stroke();
       }
-      doc.text(cell !== null && cell !== undefined ? String(cell) : '-', currentX + 2, currentY + 6, { 
-        width: colWidths[i] - 4, 
-        align: i === 1 || i === 2 ? 'left' : 'center' 
+      doc.text(cell !== null && cell !== undefined ? String(cell) : '-', currentX + 2, currentY + 4, {
+        width: colWidths[i] - 4,
+        align: i === 1 || i === 2 ? 'left' : 'center'
       });
       currentX += colWidths[i];
     });
@@ -95,14 +125,14 @@ exports.generatePV = async (req, res) => {
 
   try {
     const doc = new PDFDocument({ margin: 40, size: 'A4', layout: (type === 'ue' || type === 'cycle') ? 'landscape' : 'portrait' });
-    
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="PV_${type}_${Date.now()}.pdf"`);
     doc.pipe(res);
 
-    // --- 1. En-tête bilingue officiel ---
+    // --- 1. En-tete bilingue officiel ---
     const pageWidth = doc.page.width;
-    
+
     doc.fontSize(10).font("Helvetica-Bold");
     doc.text("REPUBLIQUE DU CAMEROUN", 40, 40);
     doc.fontSize(8).font("Helvetica");
@@ -111,7 +141,7 @@ exports.generatePV = async (req, res) => {
     doc.text("UNIVERSITE DE YAOUNDE I", 45, 75);
     doc.fontSize(9).font("Helvetica");
     doc.text("FACULTE DES SCIENCES", 50, 90);
-    
+
     doc.fontSize(10).font("Helvetica-Bold");
     doc.text("REPUBLIC OF CAMEROON", pageWidth - 190, 40);
     doc.fontSize(8).font("Helvetica");
@@ -123,25 +153,25 @@ exports.generatePV = async (req, res) => {
 
     // --- Logo ---
     try {
-      const logoPath = path.join(__dirname, '../../ressources/images/uy1_logo.png');
-      if (fs.existsSync(logoPath)) {
+      const logoPath = getLogoPath();
+      if (logoPath) {
         doc.image(logoPath, pageWidth / 2 - 25, 40, { width: 50, height: 60 });
       }
     } catch (err) {
-      console.warn("Logo non trouvé, ignoré.");
+      console.error("Erreur lors de l'insertion du logo:", err.message);
     }
 
-    // Récupération des informations de la classe (filiere, grade, specialite, etc.)
-    let filiereStr = 'Non défini';
-    let specialiteStr = 'Non défini';
-    let gradeStr = 'Non défini';
+    // Recuperation des informations de la classe (filiere, grade, specialite, etc.)
+    let filiereStr = 'Non defini';
+    let specialiteStr = 'Non defini';
+    let gradeStr = 'Non defini';
     let niveauStr = '-';
     let nomClasse = '-';
-    let semestreStr = 'Non défini';
+    let semestreStr = 'Non defini';
     let anneeText = annee_id || '-';
 
     if (classe_id) {
-      // Nous utiliserons une requête imbriquée pour récupérer les libellés
+      // Nous utiliserons une requete imbriquee pour recuperer les libelles
       const { data: classeData } = await supabase
         .from('classe')
         .select(`
@@ -152,7 +182,7 @@ exports.generatePV = async (req, res) => {
         `)
         .eq('id_classe', classe_id)
         .single();
-      
+
       if (classeData) {
         nomClasse = classeData.nom_classe;
         filiereStr = classeData.specialite?.filiere?.nom_filiere || filiereStr;
@@ -177,10 +207,10 @@ exports.generatePV = async (req, res) => {
       doc.text(ecTitle, 0, 160, { align: "center" });
 
       doc.fontSize(10).font("Helvetica");
-      doc.text(`Filière : ${filiereStr}   |   Spécialité : ${specialiteStr}`, 0, 180, { align: "center" });
-      doc.text(`Grade : ${gradeStr}   |   Année académique : ${anneeText}`, 0, 195, { align: "center" });
+      doc.text(`Filiere : ${filiereStr}   |   Specialite : ${specialiteStr}`, 0, 180, { align: "center" });
+      doc.text(`Grade : ${gradeStr}   |   Annee academique : ${anneeText}`, 0, 195, { align: "center" });
 
-      // Récupération des notes
+      // Recuperation des notes
       const { data: notes } = await supabase
         .from('note')
         .select(`valeur_cc, valeur_tp, valeur_sn, etudiant ( matricule, nom, prenom )`)
@@ -199,7 +229,7 @@ exports.generatePV = async (req, res) => {
           const ccv = n.valeur_cc !== null ? Number(n.valeur_cc) : 0;
           const tpv = n.valeur_tp !== null ? Number(n.valeur_tp) : 0;
           const snv = n.valeur_sn !== null ? Number(n.valeur_sn) : 0;
-          
+
           let total20 = 0;
           if (ec.has_cc && ec.has_tp && ec.has_sn) total20 = ccv + tpv + snv;
           else if (ec.has_cc && ec.has_sn) total20 = ccv + snv;
@@ -209,7 +239,7 @@ exports.generatePV = async (req, res) => {
 
           const score100 = (total20 / 20) * 100;
           const grade = getGradeLocal(score100);
-          
+
           if (['A', 'A-', 'B+', 'B', 'B-', 'C+', 'C'].includes(grade)) caCount++;
           else if (['C-', 'D+', 'D'].includes(grade)) cantCount++;
           else ncCount++;
@@ -226,9 +256,9 @@ exports.generatePV = async (req, res) => {
         });
       }
 
-      const headers = ['N°', 'Matricule', 'Nom & Prénom', 'CC', 'TP', 'EE / SN', 'Observations'];
+      const headers = ['N', 'Matricule', 'Nom & Prenom', 'CC', 'TP', 'EE / SN', 'Observations'];
       const colWidths = [30, 80, 180, 40, 40, 50, 95];
-      
+
       let finalY = drawTable(doc, 220, headers, rows, colWidths, 40);
 
       // Statistiques EC
@@ -239,18 +269,18 @@ exports.generatePV = async (req, res) => {
       doc.moveDown(2);
       finalY += 30;
       doc.fontSize(10).font("Helvetica-Bold").fillColor('#000');
-      doc.text("Statistiques de l'Élément Constitutif", 40, finalY);
-      
-      const statHeaders = ['Filière', 'Grade', 'Niveau', 'Année', 'EC', 'Effectif', 'CA', '%CA', 'CANT', '%CANT', 'NC', '%NC'];
+      doc.text("Statistiques de l'Element Constitutif", 40, finalY);
+
+      const statHeaders = ['Filiere', 'Grade', 'Niveau', 'Annee', 'EC', 'Effectif', 'CA', '%CA', 'CANT', '%CANT', 'NC', '%NC'];
       const statColWidths = [60, 40, 40, 50, 60, 40, 30, 35, 40, 40, 30, 35];
       const statRows = [[
-        filiereStr.substring(0, 8), gradeStr, niveauStr, anneeText, ec.code_ec || '-', 
+        filiereStr.substring(0, 8), gradeStr, niveauStr, anneeText, ec.code_ec || '-',
         etudiantsCount.toString(), caCount.toString(), pCa, cantCount.toString(), pCant, ncCount.toString(), pNc
       ]];
 
       drawTable(doc, finalY + 15, statHeaders, statRows, statColWidths, 10);
 
-    } 
+    }
     else if (type === 'ue') {
       // ---------------------------------------------------------
       // PV GLOBAL DE L'UNITE D'ENSEIGNEMENT (UE)
@@ -266,8 +296,8 @@ exports.generatePV = async (req, res) => {
       doc.text(ueTitle, 0, 150, { align: "center" });
 
       doc.fontSize(10).font("Helvetica");
-      doc.text(`Filière : ${filiereStr}   |   Spécialité : ${specialiteStr}`, 0, 170, { align: "center" });
-      doc.text(`Grade : ${gradeStr}   |   Année académique : ${anneeText}`, 0, 185, { align: "center" });
+      doc.text(`Filiere : ${filiereStr}   |   Specialite : ${specialiteStr}`, 0, 170, { align: "center" });
+      doc.text(`Grade : ${gradeStr}   |   Annee academique : ${anneeText}`, 0, 185, { align: "center" });
 
       // Fetch all ECs for this UE
       const { data: ecs } = await supabase.from('ec').select('*').eq('ue_id', ue_id);
@@ -289,9 +319,9 @@ exports.generatePV = async (req, res) => {
         .in('ec_id', ecIds)
         .eq('annee_id', annee_id);
 
-      const headers = ['N°', 'Matricule', 'Nom & Prénom'];
+      const headers = ['N', 'Matricule', 'Nom & Prenom'];
       const colWidths = [30, 80, 200];
-      
+
       if (ecs) {
         ecs.forEach(ec => {
           headers.push(`${ec.code_ec}\n(${ec.credits_ec} cr)`);
@@ -309,9 +339,9 @@ exports.generatePV = async (req, res) => {
           const s = insc.etudiant;
           if (!s) return;
           const nomComplet = `${s.nom || ''} ${s.prenom || ''}`.trim();
-          
+
           let studentWeightedSum = 0;
-          const rowData = [(i+1).toString(), s.matricule, nomComplet];
+          const rowData = [(i + 1).toString(), s.matricule, nomComplet];
 
           if (ecs) {
             ecs.forEach(ec => {
@@ -350,7 +380,7 @@ exports.generatePV = async (req, res) => {
       }
 
       // Landscape startX margin adjusting
-      const totalTableWidth = colWidths.reduce((a,b)=>a+b,0);
+      const totalTableWidth = colWidths.reduce((a, b) => a + b, 0);
       const startX = (pageWidth - totalTableWidth) / 2;
 
       let finalY = drawTable(doc, 210, headers, rows, colWidths, startX);
@@ -363,9 +393,9 @@ exports.generatePV = async (req, res) => {
 
       finalY += 30;
       doc.fontSize(10).font("Helvetica-Bold").fillColor('#000');
-      doc.text("Statistiques Globales de l'Unité d'Enseignement", startX, finalY);
+      doc.text("Statistiques Globales de l'Unite d'Enseignement", startX, finalY);
 
-      const statHeaders = ['Filière', 'Grade', 'Niveau', 'Année', 'UE', 'Effectif', 'CA', '%CA', 'CANT', '%CANT', 'NC', '%NC'];
+      const statHeaders = ['Filiere', 'Grade', 'Niveau', 'Annee', 'UE', 'Effectif', 'CA', '%CA', 'CANT', '%CANT', 'NC', '%NC'];
       const statColWidths = [60, 40, 40, 50, 60, 40, 30, 40, 40, 40, 30, 40];
       const statRows = [[
         filiereStr.substring(0, 8), gradeStr, niveauStr, anneeText, ue.code_ue || '-',
@@ -381,13 +411,13 @@ exports.generatePV = async (req, res) => {
       doc.fontSize(14).font("Helvetica-Bold");
       doc.text("PROCES VERBAL PAR CYCLE", 0, 130, { align: "center" });
 
-      // Récupérer les informations de l'étudiant
+      // Recuperer les informations de l'etudiant
       const { data: etudiant } = await supabase
         .from('etudiant')
         .select('*')
         .eq('id_etudiant', etudiant_id)
         .single();
-      
+
       if (!etudiant) throw new Error("Etudiant introuvable");
 
       const nomComplet = `${etudiant.nom || ''} ${etudiant.prenom || ''}`.trim();
@@ -396,10 +426,10 @@ exports.generatePV = async (req, res) => {
       doc.fontSize(12).font("Helvetica");
       doc.text(`Etudiant: ${nomComplet} (${matricule})`, 0, 150, { align: "center" });
       doc.fontSize(10).font("Helvetica");
-      doc.text(`Filière : ${filiereStr}   |   Spécialité : ${specialiteStr}`, 0, 170, { align: "center" });
-      doc.text(`Grade : ${gradeStr}   |   Année académique : ${anneeText}`, 0, 185, { align: "center" });
+      doc.text(`Filiere : ${filiereStr}   |   Specialite : ${specialiteStr}`, 0, 170, { align: "center" });
+      doc.text(`Grade : ${gradeStr}   |   Annee academique : ${anneeText}`, 0, 185, { align: "center" });
 
-      // Déterminer le cycle basé sur le niveau
+      // Determiner le cycle base sur le niveau
       const niveauLower = (niveauStr || '').toLowerCase();
       let cycle = '';
       let niveauxCycle = [];
@@ -411,13 +441,13 @@ exports.generatePV = async (req, res) => {
         cycle = 'MASTER';
         niveauxCycle = ['M1', 'M2'];
       } else {
-        throw new Error("Niveau non reconnu pour le tirage par cycle. Niveaux supportés: L1, L2, L3, M1, M2");
+        throw new Error("Niveau non reconnu pour le tirage par cycle. Niveaux supportes: L1, L2, L3, M1, M2");
       }
 
       doc.fontSize(12).font("Helvetica-Bold");
       doc.text(`CYCLE: ${cycle}`, 0, 210, { align: "center" });
 
-      // Récupérer toutes les classes du même cycle pour la filière/spécialité
+      // Recuperer toutes les classes du meme cycle pour la filiere/specialite
       const { data: classesCycle } = await supabase
         .from('classe')
         .select(`
@@ -429,12 +459,12 @@ exports.generatePV = async (req, res) => {
         .in('niveau.id_niveau', niveauxCycle);
 
       if (!classesCycle || classesCycle.length === 0) {
-        throw new Error("Aucune classe trouvée pour ce cycle");
+        throw new Error("Aucune classe trouvee pour ce cycle");
       }
 
       const classeIds = classesCycle.map(c => c.id_classe);
 
-      // Récupérer toutes les inscriptions de l'étudiant dans ces classes
+      // Recuperer toutes les inscriptions de l'etudiant dans ces classes
       const { data: inscriptions } = await supabase
         .from('inscription')
         .select(`
@@ -446,19 +476,19 @@ exports.generatePV = async (req, res) => {
         .eq('annee_id', annee_id);
 
       if (!inscriptions || inscriptions.length === 0) {
-        throw new Error("Aucune inscription trouvée pour cet étudiant dans ce cycle");
+        throw new Error("Aucune inscription trouvee pour cet etudiant dans ce cycle");
       }
 
-      // Organiser les données par niveau
+      // Organiser les donnees par niveau
       const notesParNiveau = {};
       niveauxCycle.forEach(n => notesParNiveau[n] = []);
 
-      // Pour chaque inscription, récupérer les UEs et les notes
+      // Pour chaque inscription, recuperer les UEs et les notes
       for (const insc of inscriptions) {
         const niveau = insc.classe?.niveau?.id_niveau?.toUpperCase() || '';
         if (!niveauxCycle.includes(niveau)) continue;
 
-        // Récupérer les UEs pour cette classe
+        // Recuperer les UEs pour cette classe
         const { data: ues } = await supabase
           .from('ue')
           .select('id_ue, code_ue, intitule_ue, credits_ue')
@@ -466,7 +496,7 @@ exports.generatePV = async (req, res) => {
 
         if (!ues || ues.length === 0) continue;
 
-        // Récupérer les ECs pour chaque UE
+        // Recuperer les ECs pour chaque UE
         for (const ue of ues) {
           const { data: ecs } = await supabase
             .from('ec')
@@ -477,7 +507,7 @@ exports.generatePV = async (req, res) => {
 
           const ecIds = ecs.map(e => e.id_ec);
 
-          // Récupérer les notes de l'étudiant pour ces ECs
+          // Recuperer les notes de l'etudiant pour ces ECs
           const { data: notes } = await supabase
             .from('note')
             .select('*')
@@ -504,8 +534,8 @@ exports.generatePV = async (req, res) => {
               else if (ec.has_cc) final20 = ccv;
 
               const ecScore100 = (final20 / 20) * 100;
-              const ecScore4 = (final20 / 20) * 4; // Convertir en échelle /4.0
-              
+              const ecScore4 = (final20 / 20) * 4; // Convertir en echelle /4.0
+
               notesParNiveau[niveau].push({
                 ue: ue.code_ue || '',
                 ue_intitule: ue.intitule_ue || '',
@@ -532,7 +562,7 @@ exports.generatePV = async (req, res) => {
           continue;
         }
 
-        // Calculer la moyenne pondérée du niveau (échelle /4.0)
+        // Calculer la moyenne ponderee du niveau (echelle /4.0)
         let totalCredits = 0;
         let weightedSum = 0;
 
@@ -544,17 +574,17 @@ exports.generatePV = async (req, res) => {
         const mgp = totalCredits > 0 ? weightedSum / totalCredits : 0;
         mgpParNiveau[niveau] = mgp;
 
-        // Vérifier si MGP > 2.0 selon le système académique
-        // Note: null est différent de 0 - si MGP est null, l'étudiant n'est pas admis
+        // Verifier si MGP > 2.0 selon le systeme academique
+        // Note: null est different de 0 - si MGP est null, l'etudiant n'est pas admis
         if (mgp === null || mgp <= 2.0) {
           cycleAdmis = false;
         }
       }
 
-      // Décision finale
+      // Decision finale
       const decision = cycleAdmis ? 'ADMIS' : 'AJOURNE';
 
-      // Afficher les résultats par niveau
+      // Afficher les resultats par niveau
       let currentY = 240;
       doc.fontSize(11).font("Helvetica-Bold");
       doc.text("RESULTATS PAR NIVEAU", 40, currentY);
@@ -562,7 +592,7 @@ exports.generatePV = async (req, res) => {
 
       for (const niveau of niveauxCycle) {
         const mgp = mgpParNiveau[niveau];
-        const observation = mgp !== null && mgp > 2.0 ? 'VALIDE' : 'NON VALIDÉ (MGP <= 2.0)';
+        const observation = mgp !== null && mgp > 2.0 ? 'VALIDE' : 'NON VALIDE (MGP <= 2.0)';
 
         doc.fontSize(10).font("Helvetica-Bold");
         doc.text(`NIVEAU ${niveau}`, 40, currentY);
@@ -574,16 +604,16 @@ exports.generatePV = async (req, res) => {
         doc.text(`Observation: ${observation}`, 50, currentY);
         currentY += 20;
 
-        // Détail des UE/EC pour ce niveau
+        // Detail des UE/EC pour ce niveau
         const notes = notesParNiveau[niveau];
         if (notes && notes.length > 0) {
-          const detailHeaders = ['UE', 'EC', 'Crédits', 'Note/4.0'];
+          const detailHeaders = ['UE', 'EC', 'Credits', 'Note/4.0'];
           const detailColWidths = [50, 80, 40, 50];
           const detailRows = notes.map(n => [
             n.ue,
             n.ec,
             n.credits.toString(),
-            n.note.toFixed(2) // Déjà en /4.0
+            n.note.toFixed(2) // Deja en /4.0
           ]);
 
           currentY = drawTable(doc, currentY, detailHeaders, detailRows, detailColWidths, 50);
@@ -591,18 +621,18 @@ exports.generatePV = async (req, res) => {
         }
       }
 
-      // Décision finale
+      // Decision finale
       currentY += 10;
       doc.fontSize(12).font("Helvetica-Bold");
       const decisionColor = decision === 'ADMIS' ? '#2e7d32' : '#c62828';
       doc.fillColor(decisionColor);
-      doc.text(`DÉCISION FINALE: ${decision}`, 40, currentY);
+      doc.text(`DECISION FINALE: ${decision}`, 40, currentY);
       doc.fillColor('#000000');
 
       // Ajouter une note explicative
       currentY += 20;
       doc.fontSize(8).font("Helvetica");
-      doc.text("* Note: Un étudiant est ADMIS si sa MGP (Moyenne Générale Pondérée) de chaque niveau du cycle est > 2.0/4.0. null est différent de 0.", 40, currentY, { width: 500 });
+      doc.text("* Note: Un etudiant est ADMIS si sa MGP (Moyenne Generale Ponderee) de chaque niveau du cycle est > 2.0/4.0. null est different de 0.", 40, currentY, { width: 500 });
     }
     else {
       doc.text("En cours de construction pour ce type (Annuel / Recap)");
@@ -611,9 +641,379 @@ exports.generatePV = async (req, res) => {
     doc.end();
 
   } catch (err) {
-    console.error('Erreur lors de la génération du PV PDF:', err);
+    console.error('Erreur lors de la generation du PV PDF:', err);
     if (!res.headersSent) {
-      res.status(500).json({ message: 'Erreur lors de la génération du PV PDF', error: err.message });
+      res.status(500).json({ message: 'Erreur lors de la generation du PV PDF', error: err.message });
+    }
+  }
+};
+
+
+// --- generateRecap ---------------------------------------------------------
+// POST /api/pv/generate-recap
+// Body: { matricule: string, cycle: 'LICENCE'|'MASTER' }
+// Returns: application/pdf stream
+// ----------------------------------------------------------------------------
+const n = (v) => Number(v ?? 0);
+
+const computeScore4 = (ec, note) => {
+  const ccv = note.valeur_cc !== null ? n(note.valeur_cc) : 0;
+  const tpv = note.valeur_tp !== null ? n(note.valeur_tp) : 0;
+  const snv = note.valeur_sn !== null ? n(note.valeur_sn) : 0;
+  let total20 = 0;
+  if (ec.has_cc && ec.has_tp && ec.has_sn) total20 = ccv + tpv + snv;
+  else if (ec.has_cc && ec.has_sn) total20 = ccv + snv;
+  else if (ec.has_tp && ec.has_sn) total20 = tpv + snv;
+  else if (ec.has_sn) total20 = snv;
+  else if (ec.has_cc) total20 = ccv;
+  return Math.min(4, Math.max(0, total20 / 5));
+};
+
+const cote4 = (score4) => {
+  const s = score4 * 25;
+  if (s >= 80) return 'A';
+  if (s >= 75) return 'A-';
+  if (s >= 70) return 'B+';
+  if (s >= 65) return 'B';
+  if (s >= 60) return 'B-';
+  if (s >= 55) return 'C+';
+  if (s >= 50) return 'C';
+  if (s >= 45) return 'C-';
+  if (s >= 40) return 'D+';
+  if (s >= 35) return 'D';
+  return 'F';
+};
+
+exports.generateRecap = async (req, res) => {
+  try {
+    const { matricule, cycle } = req.body;
+    if (!matricule || !cycle) {
+      return res.status(400).json({ message: 'Matricule et cycle sont requis.' });
+    }
+
+    // -- 0. Etudiant ---------------------------------------------------------
+    const { data: student, error: stuErr } = await supabase
+      .from('etudiant')
+      .select('id_etudiant, matricule, nom, prenom, date_naissance, lieu_naissance')
+      .eq('matricule', matricule.trim())
+      .maybeSingle();
+
+    if (stuErr) throw stuErr;
+    if (!student) return res.status(404).json({ message: 'Etudiant non trouve.' });
+
+    // -- 1. Inscriptions validees ---------------------------------------------
+    const { data: inscriptions, error: insErr } = await supabase
+      .from('inscription')
+      .select('classe_id, annee_id, classe(id_classe, nom_classe, niveau(id_niveau, libelle_niveau, cycle), specialite(nom, filiere(nom_filiere)))')
+      .eq('etudiant_id', student.id_etudiant)
+      .eq('est_validee', true);
+
+    if (insErr) throw insErr;
+
+    const cycleInscriptions = (inscriptions || []).filter(
+      (item) => String(item.classe?.niveau?.cycle || '').toUpperCase() === cycle.toUpperCase()
+    );
+    if (!cycleInscriptions.length) throw new Error(`Aucune inscription validee dans le cycle ${cycle}.`);
+
+    const niveauMap = new Map();
+    cycleInscriptions.forEach((item) => {
+      const key = item.classe?.niveau?.id_niveau ?? item.classe_id;
+      if (!niveauMap.has(key)) niveauMap.set(key, item.classe);
+    });
+    const niveaux = [...niveauMap.values()].sort(
+      (a, b) => (a.niveau?.id_niveau ?? 0) - (b.niveau?.id_niveau ?? 0)
+    );
+    const classeIds = niveaux.map((c) => c.id_classe);
+
+    // -- 2. Programme (UE/EC/Semestre) ----------------------------------------
+    const { data: programmes, error: progErr } = await supabase
+      .from('programme')
+      .select('classe_id, annee_id, semestre_id, ue(id_ue, code_ue, intitule_ue, ec(id_ec, code_ec, intitule_ec, credits_ec, has_cc, has_tp, has_sn))')
+      .in('classe_id', classeIds);
+
+    if (progErr) throw progErr;
+
+    const uesByClasse = new Map();
+    (programmes || []).forEach((p) => {
+      if (!uesByClasse.has(p.classe_id)) uesByClasse.set(p.classe_id, new Map());
+      const map = uesByClasse.get(p.classe_id);
+      const ue = Array.isArray(p.ue) ? p.ue[0] : p.ue;
+      if (!ue) return;
+      if (!map.has(ue.id_ue)) map.set(ue.id_ue, { ue, sem: p.semestre_id });
+    });
+
+    const allEcIds = [...new Set([...uesByClasse.values()].flatMap(map =>
+      [...map.values()].flatMap(({ ue }) => {
+        const ecs = Array.isArray(ue.ec) ? ue.ec : (ue.ec ? [ue.ec] : []);
+        return ecs.map((ec) => ec.id_ec);
+      })
+    ))];
+
+    // -- 3. Notes -------------------------------------------------------------
+    const { data: notes, error: noteErr } = allEcIds.length
+      ? await supabase.from('note')
+          .select('ec_id, annee_id, valeur_cc, valeur_tp, valeur_sn')
+          .eq('etudiant_id', student.id_etudiant)
+          .in('ec_id', allEcIds)
+      : { data: [], error: null };
+
+    if (noteErr) throw noteErr;
+
+    const notesByEc = new Map();
+    (notes || []).forEach((note) => {
+      if (!notesByEc.has(note.ec_id)) notesByEc.set(note.ec_id, []);
+      notesByEc.get(note.ec_id).push(note);
+    });
+
+    // -- 4. Calcul par niveau -------------------------------------------------
+    const levels = niveaux.map((classe) => {
+      const ueEntries = [...(uesByClasse.get(classe.id_classe)?.values() || [])];
+      const rows = ueEntries.map(({ ue, sem }) => {
+        const ecs = Array.isArray(ue.ec) ? ue.ec : (ue.ec ? [ue.ec] : []);
+        const results = ecs.map((ec) => {
+          const attempts = notesByEc.get(ec.id_ec) || [];
+          let best = null;
+          for (const note of attempts) {
+            const score4 = computeScore4(ec, note);
+            if (!best || score4 > best.score4) best = { score4, annee: note.annee_id };
+          }
+          return { ec, score4: best?.score4 ?? 0, annee: best?.annee ?? '-' };
+        });
+        const credits = results.reduce((sum, r) => sum + n(r.ec.credits_ec), 0);
+        const score4 = credits
+          ? results.reduce((sum, r) => sum + r.score4 * n(r.ec.credits_ec), 0) / credits
+          : 0;
+        return {
+          code: ue.code_ue,
+          intitule: ue.intitule_ue,
+          credits,
+          sem: sem ?? '-',
+          score4,
+          ecResults: results.map((r) => ({
+            code: r.ec.code_ec,
+            intitule: r.ec.intitule_ec,
+            credits: n(r.ec.credits_ec),
+            note100: r.score4 * 25,
+            cote: cote4(r.score4),
+            annee: r.annee,
+          })),
+        };
+      });
+      const totalCredits = rows.reduce((s, r) => s + r.credits, 0);
+      const validatedCredits = rows.filter(r => r.score4 > 2).reduce((s, r) => s + r.credits, 0);
+      const average = totalCredits
+        ? rows.reduce((s, r) => s + r.score4 * r.credits, 0) / totalCredits : 0;
+      return { classe, rows, totalCredits, validatedCredits, average, hasResults: rows.length > 0 };
+    }).filter(level => level.hasResults);
+
+    if (!levels.length) throw new Error("Aucune donnee d'evaluation trouvee pour ce cycle.");
+
+    const creditsCycle = levels.reduce((s, l) => s + l.totalCredits, 0);
+    const finalAverage = creditsCycle
+      ? levels.reduce((s, l) => s + l.average * l.totalCredits, 0) / creditsCycle : 0;
+    const admitted = levels.every(l => l.average > 2);
+
+    // -- 5. Template config ----------------------------------------------------
+    const { data: tmplData } = await supabase
+      .from('document_templates')
+      .select('config')
+      .eq('type', 'PV_RECAP')
+      .maybeSingle();
+
+    const tmpl = tmplData?.config || {};
+    const hl1 = tmpl.headerLeftL1 || 'UNIVERSITE DE YAOUNDE I';
+    const hr1 = tmpl.headerRightL1 || 'UNIVERSITE DE YAOUNDE I';
+    const hl2 = tmpl.headerLeftL2 || 'FACULTE DES SCIENCES';
+    const hr2 = tmpl.headerRightL2 || 'FACULTY OF SCIENCE';
+    const hl3 = tmpl.headerLeftL3 || 'BP/P.O Box 812 Yaounde-CAMEROUN /';
+    const hr3 = tmpl.headerRightL3 || 'BP/P.O Box 812 Yaounde-CAMEROUN /';
+    const hl4 = tmpl.headerLeftL4 || 'Tel: 222 234 496 / Email: diplome@facsciences.uy1.cm';
+    const hr4 = tmpl.headerRightL4 || 'Tel: 222 234 496 / Email: diplome@facsciences.uy1.cm';
+    const footerCity = tmpl.footerCity || 'Yaounde';
+    const footerSignLeft = tmpl.footerSignLeft || 'Le President de Jury';
+    const footerSignRight = tmpl.footerSignRight || 'Les Membres';
+
+    // -- 6. PDF Generation with PDFKit -----------------------------------------
+    const doc = new PDFDocument({ margin: 0, size: 'A4' });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition',
+      `attachment; filename=PV_Cycle_${cycle}_${student.matricule}.pdf`);
+    doc.pipe(res);
+
+    const W = 595.28; // A4 width in pt
+    const ML = 32;
+    const MR = 32;
+
+    // Header
+    doc.font('Helvetica-Bold').fontSize(10).fillColor('black')
+      .text(hl1, ML, 30)
+      .text(hr1, ML, 30, { align: 'right', width: W - ML - MR });
+
+    doc.fontSize(9)
+      .text(hl2, ML, 44)
+      .text(hr2, ML, 44, { align: 'right', width: W - ML - MR });
+
+    doc.font('Helvetica').fontSize(7)
+      .text(hl3, ML, 56)
+      .text(hr3, ML, 56, { align: 'right', width: W - ML - MR })
+      .text(hl4, ML, 66)
+      .text(hr4, ML, 66, { align: 'right', width: W - ML - MR });
+
+    // --- Logo (FIX: manquait completement dans generateRecap) ---
+    try {
+      const logoPath = getLogoPath();
+      if (logoPath) {
+        doc.image(logoPath, W / 2 - 22, 28, { width: 44, height: 52 });
+      }
+    } catch (err) {
+      console.error("Erreur lors de l'insertion du logo:", err.message);
+    }
+
+    const filiere = levels[0]?.classe?.specialite?.filiere?.nom_filiere || '-';
+    const specialite = levels[0]?.classe?.specialite?.nom || '-';
+
+    doc.font('Helvetica-Bold').fontSize(11)
+      .text(`${cycle === 'MASTER' ? 'MASTER' : 'LICENCE'} DE : ${filiere.toUpperCase()}`,
+            ML, 88, { align: 'center', width: W - ML - MR });
+    doc.fontSize(9)
+      .text(`SPECIALITE : ${specialite.toUpperCase()}`,
+            ML, 102, { align: 'center', width: W - ML - MR });
+    doc.fontSize(14)
+      .text('PROCES VERBAL RECAPITULATIF',
+            ML, 120, { align: 'center', width: W - ML - MR });
+
+    doc.moveTo(ML, 140).lineTo(W - MR, 140).lineWidth(0.5).stroke();
+
+    // Student info box
+    doc.font('Helvetica').fontSize(9).fillColor('black');
+    const dob = student.date_naissance ? new Date(student.date_naissance).toLocaleDateString('fr-FR') : '-';
+    doc.text(`Matricule : ${student.matricule}`, ML, 148);
+    doc.text(`Nom & Prenom : ${student.nom || ''} ${student.prenom || ''}`, ML + 160, 148);
+    doc.text(`Ne(e) le : ${dob}  a  ${student.lieu_naissance || '-'}`, ML, 160);
+
+    doc.moveTo(ML, 173).lineTo(W - MR, 173).lineWidth(0.3).stroke();
+
+    let y = 183;
+
+    // FIX: mesure la hauteur reelle d'une ligne AVANT de la dessiner
+    // (permet de decider un saut de page sans jamais couper une ligne en deux)
+    const measureRowHeight = (cols, widths, fontSize = 7) => {
+      doc.fontSize(fontSize);
+      const heights = cols.map((col, i) => doc.heightOfString(String(col), { width: widths[i] }));
+      return Math.max(11, Math.max(...heights) + 3);
+    };
+
+    // FIX: hauteur de ligne dynamique + retourne la hauteur utilisee pour que
+    // l'appelant incremente "y" correctement (fini le chevauchement de texte)
+    const drawTableRow = (cols, xOffsets, widths, yPos, bold, fillGray) => {
+      const font = bold ? 'Helvetica-Bold' : 'Helvetica';
+      const rowHeight = measureRowHeight(cols, widths);
+
+      if (fillGray) {
+        doc.rect(ML, yPos - 2, W - ML - MR, rowHeight).fillColor('#eeeeee').fill();
+        doc.fillColor('black');
+      }
+
+      doc.font(font).fontSize(7);
+      cols.forEach((col, i) => {
+        doc.text(String(col), ML + xOffsets[i], yPos, { width: widths[i] });
+      });
+
+      return rowHeight;
+    };
+
+    const COL_X = [0, 90, 170, 215, 255, 290, 330];
+    const COL_W = [88, 78, 43, 38, 33, 38, 100];
+    const HDRS = ['UE / EC', 'Intitule', 'Credits', 'Note/100', 'Cote', 'Sem.', 'Annee'];
+
+    // Table header
+    const headerHeight = drawTableRow(HDRS, COL_X, COL_W, y, true, true);
+    y += headerHeight + 4;
+    doc.moveTo(ML, y).lineTo(W - MR, y).lineWidth(0.3).stroke();
+    y += 3;
+
+    for (const level of levels) {
+      // Niveau header (FIX: bullet "." remplace par "-" pour eviter les caracteres corrompus)
+      doc.font('Helvetica-Bold').fontSize(8).fillColor('#1a237e')
+        .text(`Niveau : ${level.classe?.niveau?.libelle_niveau || level.classe.nom_classe}  -  MGP: ${level.average.toFixed(2)}/4.0  -  Credits: ${level.validatedCredits}/${level.totalCredits}`,
+              ML, y, { width: W - ML - MR });
+      y += 13;
+      doc.fillColor('black');
+
+      for (const ueRow of level.rows) {
+        const ueCols = [ueRow.code, ueRow.intitule, ueRow.credits.toString(),
+          (ueRow.score4 * 25).toFixed(2), cote4(ueRow.score4), ueRow.sem, ''];
+
+        // Saut de page calcule AVANT de dessiner la ligne UE
+        const ueHPreview = measureRowHeight(ueCols, COL_W);
+        if (y + ueHPreview > 760) {
+          doc.addPage();
+          y = 40;
+        }
+
+        const ueH = drawTableRow(ueCols, COL_X, COL_W, y, true, false);
+        y += ueH;
+
+        // EC rows
+        for (const ec of ueRow.ecResults) {
+          const ecCols = [`  ${ec.code}`, ec.intitule, ec.credits.toString(),
+            ec.note100.toFixed(2), ec.cote, ueRow.sem, ec.annee];
+
+          // Saut de page calcule AVANT de dessiner la ligne EC
+          const ecHPreview = measureRowHeight(ecCols, COL_W);
+          if (y + ecHPreview > 760) {
+            doc.addPage();
+            y = 40;
+          }
+
+          const ecH = drawTableRow(ecCols, COL_X, COL_W, y, false, false);
+          y += ecH;
+        }
+        doc.moveTo(ML, y).lineTo(W - MR, y).lineWidth(0.2).strokeColor('#cccccc').stroke();
+        doc.strokeColor('black');
+        y += 4;
+      }
+      y += 6;
+    }
+
+    // Decision box (FIX: bullet "." remplace par "-")
+    y += 10;
+    const decisionColor = admitted ? '#1b5e20' : '#b71c1c';
+    doc.rect(ML, y, W - ML - MR, 22).lineWidth(1).stroke();
+    doc.font('Helvetica-Bold').fontSize(12).fillColor(decisionColor)
+      .text(`DECISION : ${admitted ? 'ADMIS(E)' : 'AJOURN(E)'}  -  MGP Cycle : ${finalAverage.toFixed(2)}/4.0  -  Credits : ${levels.reduce((s, l) => s + l.validatedCredits, 0)}/${creditsCycle}`,
+            ML + 5, y + 5, { width: W - ML - MR - 10, align: 'center' });
+    doc.fillColor('black');
+
+    y += 36;
+
+    // Footer
+    const pageRange = doc.bufferedPageRange();
+    const totalPages = pageRange.count;
+    for (let pg = 0; pg < totalPages; pg++) {
+      doc.switchToPage(pageRange.start + pg);
+      const H = 841.89;
+      doc.moveTo(ML, H - 26).lineTo(W - MR, H - 26).lineWidth(0.4).stroke();
+      doc.font('Helvetica').fontSize(7)
+        .text(`PV cycle ${cycle} - ${student.matricule}`, ML, H - 14)
+        .text(`Page ${pg + 1} / ${totalPages}`, ML, H - 14, { align: 'right', width: W - ML - MR });
+    }
+
+    // Signatures on last page
+    doc.switchToPage(pageRange.start + totalPages - 1);
+    const sigY = 780;
+    doc.font('Helvetica').fontSize(8)
+      .text(`Fait à ${footerCity} le ..........................................`,
+            ML, sigY - 20, { align: 'center', width: W - ML - MR });
+    doc.text(footerSignLeft, ML + 30, sigY);
+    doc.text(footerSignRight, ML, sigY, { align: 'right', width: W - ML - MR - 30 });
+
+    doc.end();
+
+  } catch (err) {
+    console.error('Erreur generateRecap:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ message: 'Erreur lors de la generation du PV recap', error: err.message });
     }
   }
 };
