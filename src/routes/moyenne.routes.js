@@ -3,6 +3,7 @@ const { query } = require('../config/mysql');
 const { authenticateToken } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
 const { audit } = require('../services/audit.service');
+const { assertCanManageUe } = require('../middleware/ue-assignment');
 const router = express.Router();
 router.use(authenticateToken);
 
@@ -19,6 +20,7 @@ router.put('/', requirePermission('ue_notes.write'), async (req, res, next) => {
     const { matricule, idue, idsemestre, annee, idclasse, moyenne, credit, motif } = req.body;
     if (!matricule || !idue || !idsemestre || !annee || !idclasse || moyenne === undefined || !credit || !motif?.trim()) return res.status(400).json({ message: 'matricule, idue, idsemestre, annee, idclasse, moyenne, credit et motif sont requis.' });
     if (!Number.isFinite(Number(moyenne)) || Number(moyenne) < 0 || Number(moyenne) > 100) return res.status(400).json({ message: 'La moyenne UE doit être entre 0 et 100.' });
+    await assertCanManageUe({ user: req.user, idue, idclasse, annee });
     const previous = (await query('SELECT * FROM Moyennes WHERE MATRICULE=? AND IDUE=? AND IDSEMESTRE=? AND ANNEE=?', [matricule.toUpperCase(), idue, idsemestre, annee]))[0] || null;
     const isOverride = await assertWritable({ matricule: matricule.toUpperCase(), idue, idsemestre, annee, idclasse, user: req.user });
     if (isOverride && req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'Permission spéciale requise.' });

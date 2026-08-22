@@ -47,37 +47,3 @@ exports.login = async (req, res) => {
   }
 };
 
-exports.register = async (req, res) => {
-  const { email, password, role } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ message: 'Email and password are required.' });
-  }
-
-  try {
-    const existingUser = await query('SELECT id FROM users WHERE email = ? LIMIT 1', [email]);
-    if (existingUser.length) {
-      return res.status(400).json({ message: 'User already exists.' });
-    }
-
-    // Hash password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    const username = email.split('@')[0];
-    const result = await query('INSERT INTO users (username, name, email, password, locale, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, \'fr\', 1, NOW(), NOW())', [username, username, email, hashedPassword]);
-    const newUser = { id: result.insertId, email, role: role || 'USER' };
-
-    res.status(201).json({
-      message: 'User registered successfully. Pending admin validation if applicable.',
-      user: {
-        id: newUser.id,
-        email: newUser.email,
-        role: newUser.role
-      }
-    });
-  } catch (err) {
-    console.error('Registration error:', err);
-    res.status(500).json({ message: 'Internal server error during registration.' });
-  }
-};

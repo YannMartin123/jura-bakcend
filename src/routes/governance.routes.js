@@ -5,6 +5,19 @@ const { requirePermission } = require('../middleware/permissions');
 const { audit } = require('../services/audit.service');
 const router = express.Router();
 router.use(authenticateToken);
+router.get('/users', requirePermission('users.manage_permissions'), async (req,res,next) => {
+  try {
+    const role = req.query.role;
+    const users = role
+      ? await query(`SELECT DISTINCT u.id,u.name,u.email,u.is_active FROM users u
+                     JOIN model_has_roles mhr ON mhr.model_id=u.id AND mhr.model_type LIKE '%User'
+                     JOIN roles r ON r.id=mhr.role_id WHERE r.name=? ORDER BY u.name,u.email`, [role])
+      : await query('SELECT id,name,email,is_active FROM users ORDER BY name,email');
+    res.json(users);
+  } catch(e){ next(e); }
+});
+router.get('/roles', requirePermission('users.manage_permissions'), async (req,res,next) => { try { res.json(await query('SELECT name FROM roles ORDER BY name')); } catch(e){next(e)} });
+router.get('/permissions', requirePermission('users.manage_permissions'), async (req,res,next) => { try { res.json(await query('SELECT name FROM permissions ORDER BY name')); } catch(e){next(e)} });
 
 router.get('/academic-years', async (req,res,next) => { try { res.json(await query('SELECT * FROM academic_years ORDER BY annee DESC')); } catch(e){ next(e); } });
 router.post('/academic-years', requirePermission('academic_year.manage'), async (req,res,next) => {

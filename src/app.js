@@ -32,6 +32,8 @@ app.use('/api/moyennes', require('./routes/moyenne.routes'));
 app.use('/api/pv', require('./routes/pv.routes'));
 app.use('/api/governance', require('./routes/governance.routes'));
 app.use('/api/academic-locks', require('./routes/academic-lock.routes'));
+app.use('/api/teacher-work', require('./routes/teacher-work.routes'));
+app.use('/api/ec', require('./routes/ec.routes'));
 app.use('/api/deliberations', require('./routes/deliberation.routes'));
 
 // Error Handling Middleware

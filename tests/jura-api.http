@@ -137,6 +137,48 @@ Content-Type: application/json
 POST {{baseUrl}}/sessions/{{sessionId}}/close
 Authorization: Bearer {{teacherToken}}
 
+### Relevé de notes enseignant : année active, inscrits, EC et état de soumission
+GET {{baseUrl}}/teacher-work/gradebook/{{classeId}}/{{ueId}}
+Authorization: Bearer {{teacherToken}}
+
+### Enregistrer les notes d'une UE à EC unique (notes sur 100)
+PUT {{baseUrl}}/teacher-work/gradebook
+Authorization: Bearer {{teacherToken}}
+Content-Type: application/json
+
+{
+  "classe_id": {{classeId}},
+  "ue_id": {{ueId}},
+  "motif": "Import initial contrôlé",
+  "rows": [
+    { "matricule": "ETU-2024-001", "moyenne": 67.5 },
+    { "matricule": "ETU-2024-002", "moyenne": 72 }
+  ]
+}
+
+### Enregistrer les notes d'un EC d'une UE composée (adapter ec_id et les colonnes aux évaluations configurées)
+PUT {{baseUrl}}/teacher-work/gradebook
+Authorization: Bearer {{teacherToken}}
+Content-Type: application/json
+
+{
+  "classe_id": {{classeId}},
+  "ue_id": {{ueId}},
+  "ec_id": {{ecId}},
+  "motif": "Import CC et SN",
+  "rows": [
+    { "matricule": "ETU-2024-001", "CC": 65, "SN": 70 },
+    { "matricule": "ETU-2024-002", "CC": 68, "SN": 74 }
+  ]
+}
+
+### Soumettre définitivement une UE (échoue si des notes obligatoires sont manquantes)
+POST {{baseUrl}}/teacher-work/submit
+Authorization: Bearer {{teacherToken}}
+Content-Type: application/json
+
+{ "classe_id": {{classeId}}, "ue_id": {{ueId}} }
+
 ### Créer une délibération
 POST {{baseUrl}}/deliberations
 Authorization: Bearer {{adminToken}}
