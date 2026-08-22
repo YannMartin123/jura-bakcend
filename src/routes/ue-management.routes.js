@@ -129,7 +129,7 @@ router.put('/:id/semesters', async (req, res, next) => {
   try {
     const { classe_id, annee, semestre } = req.body;
     if (!classe_id || !annee || !semestre) return res.status(400).json({ message:'classe_id, annee et semestre sont requis.' });
-    if (!Number.isInteger(Number(semestre)) || Number(semestre) < 1 || Number(semestre) > 14) return res.status(400).json({ message:'Le semestre doit être compris entre 1 et 14.' });
+    if (!Number.isInteger(Number(semestre)) || Number(semestre) < 1 || Number(semestre) > 2) return res.status(400).json({ message:'Le semestre doit être compris entre 1 et 2.' });
     const [programme] = await query('SELECT 1 FROM Programme WHERE IDCLASSE=? AND IDUE=? AND ANNEE=? LIMIT 1', [classe_id, req.params.id, annee]);
     if (!programme) return res.status(409).json({ message:'Cette UE n’est pas présente dans la maquette de cette classe et année.' });
     const previous = (await query('SELECT * FROM programme_semestres WHERE IDCLASSE=? AND IDUE=? AND ANNEE=?', [classe_id, req.params.id, annee]))[0] || null;

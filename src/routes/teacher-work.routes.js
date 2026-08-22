@@ -68,27 +68,32 @@ router.get('/gradebook/:classeId/:ueId', async (req, res, next) => {
     const [assignment] = await connection.query('SELECT 1 FROM teacher_ue_assignments WHERE user_id=? AND IDCLASSE=? AND IDUE=? AND ANNEE=? LIMIT 1', [req.user.id, classeId, ueId, annee]);
     if (!assignment[0] && req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'UE non affectée à cet enseignant.' });
     const context = await getUeContext(connection, classeId, ueId, annee);
+    
+    const isRattrapage = req.query.rattrapage === 'true';
+    const targetSemester = isRattrapage ? (context.semestre === 1 ? 3 : 4) : context.semestre;
+    const targetContext = { ...context, semestre: targetSemester };
+
     const [ueRows, students, locks, ecNotes] = await Promise.all([
       connection.query('SELECT IDUE,CODUE,INTITULE FROM UE WHERE IDUE=? LIMIT 1', [ueId]),
       connection.query(`SELECT i.MATRICULE, e.NOM, m.MOYENNE AS moyenne_ue
         FROM Inscript i JOIN Etudiant e ON e.MATRICULE=i.MATRICULE
         LEFT JOIN Moyennes m ON m.MATRICULE=i.MATRICULE AND m.IDUE=? AND m.IDSEMESTRE=? AND m.ANNEE=?
-        WHERE i.IDCLASSE=? AND i.ANNEE=? ORDER BY e.NOM, i.MATRICULE`, [ueId, context.semestre, annee, classeId, annee]),
+        WHERE i.IDCLASSE=? AND i.ANNEE=? ORDER BY e.NOM, i.MATRICULE`, [ueId, targetSemester, annee, classeId, annee]),
       connection.query('SELECT statut FROM ue_class_locks WHERE IDCLASSE=? AND IDUE=? AND ANNEE=? LIMIT 1', [classeId, ueId, annee]),
       connection.query(`SELECT n.IDEC,n.MATRICULE,n.note_cc,n.note_tp,n.note_sn,n.moyenne_ec
         FROM ec_notes n JOIN ec e ON e.IDEC=n.IDEC WHERE e.IDUE=? AND n.IDCLASSE=? AND n.ANNEE=?`, [ueId, classeId, annee]),
     ]);
     const notesByStudent = {};
     ecNotes[0].forEach((note) => { if (!notesByStudent[note.MATRICULE]) notesByStudent[note.MATRICULE] = {}; notesByStudent[note.MATRICULE][note.IDEC] = note; });
-    const missing = await getCompletion(connection, classeId, ueId, annee, context);
-    res.json({ annee, classe_id: classeId, ue: ueRows[0][0], locked: locks[0][0]?.statut && locks[0][0].statut !== 'OPEN', context, students: students[0].map((student) => ({ ...student, ec_notes: notesByStudent[student.MATRICULE] || {} })), missing });
+    const missing = isRattrapage ? 0 : await getCompletion(connection, classeId, ueId, annee, targetContext);
+    res.json({ annee, classe_id: classeId, ue: ueRows[0][0], locked: locks[0][0]?.statut && locks[0][0].statut !== 'OPEN', context: targetContext, students: students[0].map((student) => ({ ...student, ec_notes: notesByStudent[student.MATRICULE] || {} })), missing });
   } catch (error) { next(error); } finally { connection.release(); }
 });
 
 router.put('/gradebook', requirePermission('ue_notes.write'), async (req, res, next) => {
   const connection = await pool.getConnection();
   try {
-    const { classe_id, ue_id, ec_id, rows, motif } = req.body;
+    const { classe_id, ue_id, ec_id, rows, motif, is_rattrapage } = req.body;
     if (!classe_id || !ue_id || !Array.isArray(rows) || !rows.length || !motif?.trim()) return res.status(400).json({ message: 'classe_id, ue_id, rows et motif sont requis.' });
     const annee = await getActiveYear(connection);
     await assertCanManageUe({ user: req.user, idue: Number(ue_id), idclasse: Number(classe_id), annee });
@@ -102,6 +107,11 @@ router.put('/gradebook', requirePermission('ue_notes.write'), async (req, res, n
     const normalized = rows.map((row) => ({ ...row, matricule: String(row.matricule || '').trim().toUpperCase() }));
     if (normalized.some((row) => !enrolled.has(row.matricule))) return res.status(400).json({ message: 'Le fichier contient au moins un étudiant non inscrit dans cette classe.' });
     if (new Set(normalized.map((row) => row.matricule)).size !== normalized.length) return res.status(400).json({ message: 'Le fichier contient des matricules dupliqués.' });
+    
+    const isRattrapage = is_rattrapage === true || is_rattrapage === 'true';
+    const targetSemester = isRattrapage ? (context.semestre === 1 ? 3 : 4) : context.semestre;
+    const targetContext = { ...context, semestre: targetSemester };
+
     const ecAuditRows = [];
     await connection.beginTransaction();
     if (context.mode === 'SINGLE') {
@@ -110,9 +120,9 @@ router.put('/gradebook', requirePermission('ue_notes.write'), async (req, res, n
         if (!Number.isFinite(moyenne) || moyenne < 0 || moyenne > 100) throw Object.assign(new Error(`Note UE invalide pour ${row.matricule}.`), { status: 400 });
         const [admitted] = await connection.query("SELECT 1 FROM Admission WHERE MATRICULE=? AND IDCLASSE=? AND ANNEE=? AND UPPER(TRIM(`DEC`))='ADMIS' LIMIT 1", [row.matricule, classe_id, annee]);
         if (admitted[0] && req.user.role !== 'SUPER_ADMIN') throw Object.assign(new Error(`Étudiant admis : modification interdite (${row.matricule}).`), { status: 403 });
-        const [previous] = await connection.query('SELECT * FROM Moyennes WHERE MATRICULE=? AND IDUE=? AND IDSEMESTRE=? AND ANNEE=?', [row.matricule, ue_id, context.semestre, annee]);
-        await connection.query('INSERT INTO Moyennes (MATRICULE,IDUE,IDSEMESTRE,ANNEE,MOYENNE,CREDIT,created_at,updated_at) VALUES (?,?,?,?,?,?,NOW(),NOW()) ON DUPLICATE KEY UPDATE MOYENNE=VALUES(MOYENNE),CREDIT=VALUES(CREDIT),updated_at=NOW()', [row.matricule, ue_id, context.semestre, annee, moyenne, context.credit]);
-        await connection.query('INSERT INTO moyenne_audit (MATRICULE,IDUE,IDSEMESTRE,ANNEE,action,old_values,new_values,motif,user_id) VALUES (?,?,?,?,?,?,?,?,?)', [row.matricule, ue_id, context.semestre, annee, previous[0] ? 'UPDATE' : 'CREATE', JSON.stringify(previous[0] || null), JSON.stringify({ moyenne, credit: context.credit }), motif.trim(), req.user.id]);
+        const [previous] = await connection.query('SELECT * FROM Moyennes WHERE MATRICULE=? AND IDUE=? AND IDSEMESTRE=? AND ANNEE=?', [row.matricule, ue_id, targetSemester, annee]);
+        await connection.query('INSERT INTO Moyennes (MATRICULE,IDUE,IDSEMESTRE,ANNEE,MOYENNE,CREDIT,created_at,updated_at) VALUES (?,?,?,?,?,?,NOW(),NOW()) ON DUPLICATE KEY UPDATE MOYENNE=VALUES(MOYENNE),CREDIT=VALUES(CREDIT),updated_at=NOW()', [row.matricule, ue_id, targetSemester, annee, moyenne, context.credit]);
+        await connection.query('INSERT INTO moyenne_audit (MATRICULE,IDUE,IDSEMESTRE,ANNEE,action,old_values,new_values,motif,user_id) VALUES (?,?,?,?,?,?,?,?,?)', [row.matricule, ue_id, targetSemester, annee, previous[0] ? 'UPDATE' : 'CREATE', JSON.stringify(previous[0] || null), JSON.stringify({ moyenne, credit: context.credit }), motif.trim(), req.user.id]);
       }
     } else {
       const component = context.ecs.find((ec) => Number(ec.id) === Number(ec_id));
@@ -136,13 +146,13 @@ router.put('/gradebook', requirePermission('ue_notes.write'), async (req, res, n
         if (allNotes.some((note) => note.moyenne_ec === null)) continue;
         const totalCredits = allNotes.reduce((sum, note) => sum + Number(note.CREDIT), 0);
         const moyenneUe = allNotes.reduce((sum, note) => sum + Number(note.CREDIT) * Number(note.moyenne_ec), 0) / totalCredits;
-        await connection.query('INSERT INTO Moyennes (MATRICULE,IDUE,IDSEMESTRE,ANNEE,MOYENNE,CREDIT,created_at,updated_at) VALUES (?,?,?,?,?,?,NOW(),NOW()) ON DUPLICATE KEY UPDATE MOYENNE=VALUES(MOYENNE),CREDIT=VALUES(CREDIT),updated_at=NOW()', [row.matricule, ue_id, context.semestre, annee, moyenneUe, context.credit]);
+        await connection.query('INSERT INTO Moyennes (MATRICULE,IDUE,IDSEMESTRE,ANNEE,MOYENNE,CREDIT,created_at,updated_at) VALUES (?,?,?,?,?,?,NOW(),NOW()) ON DUPLICATE KEY UPDATE MOYENNE=VALUES(MOYENNE),CREDIT=VALUES(CREDIT),updated_at=NOW()', [row.matricule, ue_id, targetSemester, annee, moyenneUe, context.credit]);
       }
     }
     await connection.commit();
     for (const row of ecAuditRows) await audit({ user:req.user, action:row.oldValues.IDEC ? 'UPDATE' : 'CREATE', module:'NOTES', resourceType:'ec_notes', resourceId:ec_id, description:motif.trim(), oldValues:row.oldValues, newValues:row.newValues, request:req });
     await audit({ user:req.user, action:'IMPORT', module:'NOTES', resourceType:context.mode === 'SINGLE' ? 'Moyennes' : 'ec_notes', resourceId:ec_id || ue_id, description:motif.trim(), newValues:{ classe_id, ue_id, ec_id:ec_id || null, annee, lignes:normalized.length }, request:req });
-    res.json({ success:true, annee, saved:normalized.length, mode:context.mode, missing:await getCompletion(connection, Number(classe_id), Number(ue_id), annee, context) });
+    res.json({ success:true, annee, saved:normalized.length, mode:context.mode, missing: isRattrapage ? 0 : await getCompletion(connection, Number(classe_id), Number(ue_id), annee, targetContext) });
   } catch (error) { await connection.rollback(); next(error); } finally { connection.release(); }
 });
 

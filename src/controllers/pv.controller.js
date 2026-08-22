@@ -46,6 +46,36 @@ const getGradeLocal = (score100) => {
   return 'F';
 };
 
+const getQdpLocal = (score100) => {
+  if (score100 === null || score100 === undefined) return 0.0;
+  if (score100 >= 80) return 4.0;
+  if (score100 >= 75) return 3.7;
+  if (score100 >= 70) return 3.3;
+  if (score100 >= 65) return 3.0;
+  if (score100 >= 60) return 2.7;
+  if (score100 >= 55) return 2.3;
+  if (score100 >= 50) return 2.0;
+  if (score100 >= 45) return 1.7;
+  if (score100 >= 40) return 1.3;
+  if (score100 >= 35) return 1.0;
+  if (score100 >= 30) return 0.5;
+  return 0.0;
+};
+
+const getMentionLocal = (score100) => {
+  if (score100 === null || score100 === undefined) return '-';
+  if (score100 >= 80) return 'EX';
+  if (score100 >= 75) return 'TB';
+  if (score100 >= 70) return 'B';
+  if (score100 >= 65) return 'B';
+  if (score100 >= 60) return 'AB';
+  if (score100 >= 55) return 'AB';
+  if (score100 >= 50) return 'P';
+  if (score100 >= 45) return 'P';
+  if (score100 >= 40) return 'P';
+  return 'F';
+};
+
 // Section 10 du schema : "la comparaison normalise avant de comparer, la
 // valeur venant d'une saisie manuelle dans une base tierce : espaces retires,
 // casse ignoree."
@@ -178,19 +208,31 @@ exports.generatePvUe = async (req, res) => {
     if (!classeRows.length) throw new Error('Classe introuvable');
     const classe = classeRows[0];
 
-    // Roster de la classe pour l'annee + moyenne sur cette UE/semestre (LEFT JOIN :
-    // un etudiant inscrit sans moyenne saisie doit quand meme apparaitre, en '-')
+    const semInput = Number(idsemestre);
+    const semBase = (semInput === 1 || semInput === 3) ? 1 : 2;
+    const semRattrapage = (semInput === 1 || semInput === 3) ? 3 : 4;
+
+    // Roster de la classe pour l'annee + moyenne sur cette UE/semestre.
+    // On fusionne la note de la session normale (m1) et celle de la session de rattrapage (m2)
+    // si elle existe, afin d'afficher la note finale mise a jour.
     const rows = await query(
       `SELECT e.MATRICULE, e.NOM,
-              m.MOYENNE, m.CODMENTION, m.CREDIT, m.QdP, m.Decision
+              COALESCE(m2.MOYENNE, m1.MOYENNE) AS MOYENNE,
+              COALESCE(m2.CODMENTION, m1.CODMENTION) AS CODMENTION,
+              COALESCE(m2.CREDIT, m1.CREDIT) AS CREDIT,
+              COALESCE(m2.QdP, m1.QdP) AS QdP,
+              COALESCE(m2.Decision, m1.Decision) AS Decision
        FROM Inscript i
        JOIN Etudiant e ON e.MATRICULE = i.MATRICULE
-       LEFT JOIN Moyennes m
-              ON m.MATRICULE = i.MATRICULE
-             AND m.IDUE = ? AND m.ANNEE = ? AND m.IDSEMESTRE = ?
+       LEFT JOIN Moyennes m1
+              ON m1.MATRICULE = i.MATRICULE
+             AND m1.IDUE = ? AND m1.ANNEE = ? AND m1.IDSEMESTRE = ?
+       LEFT JOIN Moyennes m2
+              ON m2.MATRICULE = i.MATRICULE
+             AND m2.IDUE = ? AND m2.ANNEE = ? AND m2.IDSEMESTRE = ?
        WHERE i.IDCLASSE = ? AND i.ANNEE = ?
        ORDER BY e.NOM`,
-      [idue, annee, idsemestre, idclasse, annee]
+      [idue, annee, semBase, idue, annee, semRattrapage, idclasse, annee]
     );
 
     // Détail des évaluations EC : les notes sont conservées sur leur barème
@@ -262,8 +304,8 @@ exports.generatePvUe = async (req, res) => {
         }),
         r.MOYENNE !== null ? Number(r.MOYENNE).toFixed(2) : '-',
         r.CREDIT !== null ? r.CREDIT : '-',
-        r.QdP !== null ? Number(r.QdP).toFixed(2) : '-',
-        r.CODMENTION || '-',
+        r.QdP !== null ? Number(r.QdP).toFixed(2) : (r.MOYENNE !== null ? getQdpLocal(Number(r.MOYENNE)).toFixed(2) : '-'),
+        r.CODMENTION || (r.MOYENNE !== null ? getMentionLocal(Number(r.MOYENNE)) : '-'),
         decision
       ]);
     });
@@ -293,6 +335,178 @@ exports.generatePvUe = async (req, res) => {
     console.error('Erreur lors de la generation du PV UE:', err);
     if (!res.headersSent) {
       res.status(500).json({ message: 'Erreur lors de la generation du PV UE', error: err.message });
+    }
+  }
+};
+
+// ============================================================================
+// PV DE RATTRAPAGE PAR UE
+// POST /api/pv/generate-ue-rattrapage
+// Body: { idue, annee, idsemestre, idclasse }
+// idsemestre = semestre de BASE de l'UE (1 ou 2).
+// Semestre de rattrapage derive automatiquement : S1 -> S3, S2 -> S4.
+// Seuls les etudiants ayant une note de rattrapage (INNER JOIN) apparaissent.
+// ============================================================================
+exports.generatePvUeRattrapage = async (req, res) => {
+  const { idue, annee, idsemestre, idclasse } = req.body;
+
+  if (!idue || !annee || !idsemestre || !idclasse) {
+    return res.status(400).json({ message: 'idue, annee, idsemestre et idclasse sont requis.' });
+  }
+
+  const semInput = Number(idsemestre);
+  if (semInput !== 1 && semInput !== 2 && semInput !== 3 && semInput !== 4) {
+    return res.status(400).json({ message: "idsemestre doit etre 1, 2, 3 ou 4." });
+  }
+
+  const semBase = (semInput === 1 || semInput === 3) ? 1 : 2;
+  const semRattrapage = (semInput === 1 || semInput === 3) ? 3 : 4;
+
+  try {
+    const ueRows = await query('SELECT * FROM UE WHERE IDUE = ?', [idue]);
+    if (!ueRows.length) throw new Error('UE introuvable');
+    const ue = ueRows[0];
+
+    const classeRows = await query(
+      `SELECT c.*, f.NOM AS FILIERE_NOM, f.CODFILIERE,
+              s.INTITULE AS SPECIALITE_INTITULE, g.INTITULE AS GRADE_INTITULE
+       FROM Classe c
+       LEFT JOIN Filiere f ON f.IDFILIERE = c.IDFILIERE
+       LEFT JOIN Specialite s ON s.IDSPECIALITE = c.IDSPECIALITE
+       LEFT JOIN Grade g ON g.CODGRADE = c.CODGRADE
+       WHERE c.IDCLASSE = ?`,
+      [idclasse]
+    );
+    if (!classeRows.length) throw new Error('Classe introuvable');
+    const classe = classeRows[0];
+
+    // INNER JOIN : seuls les etudiants ayant une note de rattrapage apparaissent
+    const rows = await query(
+      `SELECT e.MATRICULE, e.NOM,
+              m.MOYENNE, m.CODMENTION, m.CREDIT, m.QdP, m.Decision
+       FROM Inscript i
+       JOIN Etudiant e ON e.MATRICULE = i.MATRICULE
+       INNER JOIN Moyennes m
+              ON m.MATRICULE = i.MATRICULE
+             AND m.IDUE = ? AND m.ANNEE = ? AND m.IDSEMESTRE = ?
+       WHERE i.IDCLASSE = ? AND i.ANNEE = ?
+       ORDER BY e.NOM`,
+      [idue, annee, semRattrapage, idclasse, annee]
+    );
+
+    const [evaluationRows, ecNoteRows] = await Promise.all([
+      query(`SELECT e.IDEC,e.INTITULE,t.type,t.echelle
+             FROM ec e JOIN ec_evaluation_types t ON t.IDEC=e.IDEC
+             WHERE e.IDUE=? ORDER BY e.IDEC, FIELD(t.type,'CC','TP','SN')`, [idue]),
+      query(`SELECT n.MATRICULE,n.IDEC,n.note_cc,n.note_tp,n.note_sn
+             FROM ec_notes n JOIN ec e ON e.IDEC=n.IDEC
+             WHERE e.IDUE=? AND n.IDCLASSE=? AND n.ANNEE=?`, [idue, idclasse, annee]),
+    ]);
+
+    const evaluationColumns = evaluationRows.map((item) => ({
+      key: `${item.IDEC}-${item.type}`,
+      idec: Number(item.IDEC),
+      type: item.type,
+      echelle: Number(item.echelle),
+      label: evaluationRows.length === 1
+        ? `${item.type} /${item.echelle}`
+        : `EC${evaluationRows.findIndex((row) => Number(row.IDEC) === Number(item.IDEC)) + 1} ${item.type}\n/${item.echelle}`,
+    }));
+
+    const notesByStudent = new Map();
+    ecNoteRows.forEach((note) => {
+      if (!notesByStudent.has(note.MATRICULE)) notesByStudent.set(note.MATRICULE, {});
+      notesByStudent.get(note.MATRICULE)[note.IDEC] = note;
+    });
+
+    const doc = new PDFDocument({ margin: 40, size: 'A4', layout: 'landscape' });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="PV_RATTRAPAGE_UE_${idue}_${Date.now()}.pdf"`);
+    doc.pipe(res);
+
+    const pageWidth = doc.page.width;
+    drawHeader(doc, pageWidth);
+
+    doc.fontSize(14).font('Helvetica-Bold');
+    doc.text("PROCES VERBAL DE RATTRAPAGE - UNITE D'ENSEIGNEMENT", 0, 130, { align: 'center' });
+
+    doc.fontSize(12).font('Helvetica');
+    doc.text(`${ue.CODUE || ''} - ${ue.INTITULE || ''}`.toUpperCase(), 0, 150, { align: 'center' });
+
+    doc.fontSize(10).font('Helvetica');
+    doc.text(`Filiere : ${classe.FILIERE_NOM || '-'}   |   Specialite : ${classe.SPECIALITE_INTITULE || '-'}`, 0, 170, { align: 'center' });
+    doc.text(
+      `Grade : ${classe.GRADE_INTITULE || classe.CODGRADE || '-'}   |   Niveau : ${classe.NIVEAU || '-'}   |   Annee : ${annee}   |   Session : Rattrapage S${semBase} (Semestre ${semRattrapage})`,
+      0, 185, { align: 'center' }
+    );
+
+    if (evaluationColumns.length > 1) {
+      const labels = [...new Map(evaluationRows.map((item) => [
+        item.IDEC,
+        `EC${evaluationRows.findIndex((row) => Number(row.IDEC) === Number(item.IDEC)) + 1}: ${item.INTITULE || `Element ${item.IDEC}`}`
+      ])).values()];
+      doc.fontSize(7).font('Helvetica').text(`Detail des EC : ${labels.join('   |   ')}`, 40, 198, { width: pageWidth - 80, align: 'center' });
+    }
+
+    const detailWidth = evaluationColumns.length ? Math.max(28, Math.floor(280 / evaluationColumns.length)) : 0;
+    const headers = ['N', 'Matricule', 'Nom & Prenom', ...evaluationColumns.map((col) => col.label), 'Moyenne\n/100', 'Credit', 'QdP', 'Mention', 'Decision'];
+    const colWidths = [24, 65, 135, ...evaluationColumns.map(() => detailWidth), 55, 40, 40, 50, 60];
+
+    if (!rows.length) {
+      doc.fontSize(11).font('Helvetica').fillColor('#555');
+      doc.text(
+        'Aucun etudiant ne figure en session de rattrapage pour cette UE.',
+        40, evaluationColumns.length > 1 ? 220 : 215,
+        { align: 'center', width: pageWidth - 80 }
+      );
+    } else {
+      const tableRows = [];
+      const decisionCounts = {};
+
+      rows.forEach((r, i) => {
+        const decision = r.Decision || (r.MOYENNE !== null ? getGradeLocal(Number(r.MOYENNE)) : '-');
+        decisionCounts[decision] = (decisionCounts[decision] || 0) + 1;
+        const studentNotes = notesByStudent.get(r.MATRICULE) || {};
+        tableRows.push([
+          (i + 1).toString(),
+          r.MATRICULE,
+          r.NOM,
+          ...evaluationColumns.map((col) => {
+            const note = studentNotes[col.idec];
+            const value = col.type === 'CC' ? note?.note_cc : col.type === 'TP' ? note?.note_tp : note?.note_sn;
+            return value !== null && value !== undefined ? Number(value).toFixed(2) : '-';
+          }),
+          r.MOYENNE !== null ? Number(r.MOYENNE).toFixed(2) : '-',
+          r.CREDIT !== null ? r.CREDIT : '-',
+          r.QdP !== null ? Number(r.QdP).toFixed(2) : (r.MOYENNE !== null ? getQdpLocal(Number(r.MOYENNE)).toFixed(2) : '-'),
+          r.CODMENTION || (r.MOYENNE !== null ? getMentionLocal(Number(r.MOYENNE)) : '-'),
+          decision,
+        ]);
+      });
+
+      let finalY = drawTable(doc, evaluationColumns.length > 1 ? 212 : 210, headers, tableRows, colWidths, 40);
+
+      finalY += 30;
+      doc.fontSize(10).font('Helvetica-Bold').fillColor('#000');
+      doc.text('Statistiques - Session de Rattrapage', 40, finalY);
+
+      const totalRattrapage = rows.length;
+      const statLabelsR = Object.keys(decisionCounts);
+      const statHeadersR = ['Effectif', ...statLabelsR, ...statLabelsR.map((l) => `%${l}`)];
+      const statColWidthsR = [60, ...statLabelsR.map(() => 45), ...statLabelsR.map(() => 45)];
+      const statRowR = [
+        totalRattrapage.toString(),
+        ...statLabelsR.map((l) => decisionCounts[l].toString()),
+        ...statLabelsR.map((l) => totalRattrapage ? ((decisionCounts[l] / totalRattrapage) * 100).toFixed(2) : '0.00'),
+      ];
+      drawTable(doc, finalY + 15, statHeadersR, [statRowR], statColWidthsR, 40);
+    }
+
+    doc.end();
+  } catch (err) {
+    console.error('Erreur lors de la generation du PV de rattrapage UE:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ message: 'Erreur lors de la generation du PV de rattrapage UE', error: err.message });
     }
   }
 };

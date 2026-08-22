@@ -10,6 +10,9 @@ router.use(authenticateToken);
 // PV global d'une UE pour une classe (roster + moyennes + stats par decision)
 router.post('/generate-ue', requirePermission('pv.ue.generate'), requireUeAssignment, pvController.generatePvUe);
 
+// PV de rattrapage d'une UE : uniquement les etudiants ayant une note de rattrapage (S3 ou S4)
+router.post('/generate-ue-rattrapage', requirePermission('pv.ue.generate'), requireUeAssignment, pvController.generatePvUeRattrapage);
+
 // PV recapitulatif de cycle pour un etudiant (base sur ulmdpvrecap)
 router.post('/generate-recap', requirePermission('pv.generate'), pvController.generateRecap);
 
