@@ -19,12 +19,12 @@ async function getUeContext(connection, classeId, ueId, annee) {
     FROM Programme p LEFT JOIN programme_semestres ps ON ps.IDCLASSE=p.IDCLASSE AND ps.IDUE=p.IDUE AND ps.ANNEE=p.ANNEE
     WHERE p.IDCLASSE=? AND p.IDUE=? AND p.ANNEE=? LIMIT 1`, [classeId, ueId, annee]);
   if (!programme[0] || !programme[0].IDSEMESTRE) throw Object.assign(new Error('Cette UE n’est pas correctement programmée (semestre manquant).'), { status: 409 });
-  const [ecRows] = await connection.query(`SELECT e.IDEC, e.INTITULE, e.CREDIT, t.type, t.ponderation
+  const [ecRows] = await connection.query(`SELECT e.IDEC, e.INTITULE, e.CREDIT, t.type, t.echelle
     FROM ec e LEFT JOIN ec_evaluation_types t ON t.IDEC=e.IDEC WHERE e.IDUE=? ORDER BY e.IDEC, t.type`, [ueId]);
   const components = new Map();
   ecRows.forEach((row) => {
     if (!components.has(row.IDEC)) components.set(row.IDEC, { id: row.IDEC, intitule: row.INTITULE, credit: Number(row.CREDIT), evaluations: [] });
-    if (row.type) components.get(row.IDEC).evaluations.push({ type: row.type, ponderation: Number(row.ponderation) });
+    if (row.type) components.get(row.IDEC).evaluations.push({ type: row.type, echelle: Number(row.echelle) });
   });
   const ecs = [...components.values()];
   // Sans EC configuré, la note UE est saisie directement. Dès qu'un EC existe,
@@ -108,7 +108,7 @@ router.put('/gradebook', requirePermission('ue_notes.write'), async (req, res, n
       for (const row of normalized) {
         const moyenne = Number(row.moyenne);
         if (!Number.isFinite(moyenne) || moyenne < 0 || moyenne > 100) throw Object.assign(new Error(`Note UE invalide pour ${row.matricule}.`), { status: 400 });
-        const [admitted] = await connection.query("SELECT 1 FROM Admission WHERE MATRICULE=? AND IDCLASSE=? AND ANNEE=? AND UPPER(TRIM(DEC))='ADMIS' LIMIT 1", [row.matricule, classe_id, annee]);
+        const [admitted] = await connection.query("SELECT 1 FROM Admission WHERE MATRICULE=? AND IDCLASSE=? AND ANNEE=? AND UPPER(TRIM(`DEC`))='ADMIS' LIMIT 1", [row.matricule, classe_id, annee]);
         if (admitted[0] && req.user.role !== 'SUPER_ADMIN') throw Object.assign(new Error(`Étudiant admis : modification interdite (${row.matricule}).`), { status: 403 });
         const [previous] = await connection.query('SELECT * FROM Moyennes WHERE MATRICULE=? AND IDUE=? AND IDSEMESTRE=? AND ANNEE=?', [row.matricule, ue_id, context.semestre, annee]);
         await connection.query('INSERT INTO Moyennes (MATRICULE,IDUE,IDSEMESTRE,ANNEE,MOYENNE,CREDIT,created_at,updated_at) VALUES (?,?,?,?,?,?,NOW(),NOW()) ON DUPLICATE KEY UPDATE MOYENNE=VALUES(MOYENNE),CREDIT=VALUES(CREDIT),updated_at=NOW()', [row.matricule, ue_id, context.semestre, annee, moyenne, context.credit]);
@@ -118,15 +118,15 @@ router.put('/gradebook', requirePermission('ue_notes.write'), async (req, res, n
       const component = context.ecs.find((ec) => Number(ec.id) === Number(ec_id));
       if (!component) throw Object.assign(new Error('EC requis pour cette UE composée.'), { status: 400 });
       for (const row of normalized) {
-        const [admitted] = await connection.query("SELECT 1 FROM Admission WHERE MATRICULE=? AND IDCLASSE=? AND ANNEE=? AND UPPER(TRIM(DEC))='ADMIS' LIMIT 1", [row.matricule, classe_id, annee]);
+        const [admitted] = await connection.query("SELECT 1 FROM Admission WHERE MATRICULE=? AND IDCLASSE=? AND ANNEE=? AND UPPER(TRIM(`DEC`))='ADMIS' LIMIT 1", [row.matricule, classe_id, annee]);
         if (admitted[0] && req.user.role !== 'SUPER_ADMIN') throw Object.assign(new Error(`Étudiant admis : modification interdite (${row.matricule}).`), { status: 403 });
-        let total = 0; let weights = 0; const values = {};
+        let total = 0; const values = {};
         for (const evaluation of component.evaluations) {
           const value = Number(row[evaluation.type]);
-          if (!Number.isFinite(value) || value < 0 || value > 100) throw Object.assign(new Error(`Note ${evaluation.type} invalide pour ${row.matricule}.`), { status: 400 });
-          values[evaluation.type] = value; total += value * evaluation.ponderation; weights += evaluation.ponderation;
+          if (!Number.isFinite(value) || value < 0 || value > Number(evaluation.echelle)) throw Object.assign(new Error(`Note ${evaluation.type} invalide pour ${row.matricule} : valeur attendue entre 0 et ${evaluation.echelle}.`), { status: 400 });
+          values[evaluation.type] = value; total += value;
         }
-        const moyenneEc = total / weights;
+        const moyenneEc = total;
         const [previousEc] = await connection.query('SELECT * FROM ec_notes WHERE IDEC=? AND MATRICULE=? AND IDCLASSE=? AND ANNEE=?', [component.id, row.matricule, classe_id, annee]);
         await connection.query('INSERT INTO ec_notes (IDEC,MATRICULE,IDCLASSE,ANNEE,note_cc,note_tp,note_sn,moyenne_ec,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,NOW(),NOW()) ON DUPLICATE KEY UPDATE note_cc=VALUES(note_cc),note_tp=VALUES(note_tp),note_sn=VALUES(note_sn),moyenne_ec=VALUES(moyenne_ec),updated_at=NOW()', [component.id, row.matricule, classe_id, annee, values.CC ?? null, values.TP ?? null, values.SN ?? null, moyenneEc]);
         ecAuditRows.push({ matricule:row.matricule, oldValues:previousEc[0] || {}, newValues:{ ...values, moyenne_ec:moyenneEc } });

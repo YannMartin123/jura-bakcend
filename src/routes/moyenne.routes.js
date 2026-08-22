@@ -10,7 +10,7 @@ router.use(authenticateToken);
 async function assertWritable({ matricule, idue, idsemestre, annee, idclasse, user }) {
   const locks = await query("SELECT statut FROM ue_class_locks WHERE IDCLASSE=? AND IDUE=? AND ANNEE=?", [idclasse, idue, annee]);
   if (locks[0] && locks[0].statut !== 'OPEN') { const error = new Error('UE verrouillée.'); error.status = 423; throw error; }
-  const admitted = await query("SELECT 1 FROM Admission WHERE MATRICULE=? AND IDCLASSE=? AND ANNEE=? AND UPPER(TRIM(DEC))='ADMIS' LIMIT 1", [matricule, idclasse, annee]);
+  const admitted = await query("SELECT 1 FROM Admission WHERE MATRICULE=? AND IDCLASSE=? AND ANNEE=? AND UPPER(TRIM(`DEC`))='ADMIS' LIMIT 1", [matricule, idclasse, annee]);
   if (admitted.length && user.role !== 'SUPER_ADMIN') { const error = new Error('Étudiant admis : correction réservée au super-administrateur.'); error.status = 403; throw error; }
   return admitted.length > 0;
 }

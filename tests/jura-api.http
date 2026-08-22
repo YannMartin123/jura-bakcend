@@ -6,6 +6,7 @@
 @classeId = 1
 @ueId = 1
 @ecId = 1
+@semesterId = 1
 @sessionId = 1
 @noteId = 1
 @studentId = 1
@@ -156,7 +157,8 @@ Content-Type: application/json
   ]
 }
 
-### Enregistrer les notes d'un EC d'une UE composée (adapter ec_id et les colonnes aux évaluations configurées)
+### Enregistrer les notes d'un EC d'une UE composée.
+### Exemple : EC configuré avec CC /20 et SN /80 (les barèmes doivent totaliser 100).
 PUT {{baseUrl}}/teacher-work/gradebook
 Authorization: Bearer {{teacherToken}}
 Content-Type: application/json
@@ -167,8 +169,8 @@ Content-Type: application/json
   "ec_id": {{ecId}},
   "motif": "Import CC et SN",
   "rows": [
-    { "matricule": "ETU-2024-001", "CC": 65, "SN": 70 },
-    { "matricule": "ETU-2024-002", "CC": 68, "SN": 74 }
+    { "matricule": "ETU-2024-001", "CC": 15, "SN": 55 },
+    { "matricule": "ETU-2024-002", "CC": 16, "SN": 58 }
   ]
 }
 
@@ -178,6 +180,13 @@ Authorization: Bearer {{teacherToken}}
 Content-Type: application/json
 
 { "classe_id": {{classeId}}, "ue_id": {{ueId}} }
+
+### Générer le PV d'UE avec le détail CC/TP/SN avant la moyenne UE
+POST {{baseUrl}}/pv/generate-ue
+Authorization: Bearer {{teacherToken}}
+Content-Type: application/json
+
+{ "idue": {{ueId}}, "idclasse": {{classeId}}, "annee": {{academicYear}}, "idsemestre": {{semesterId}} }
 
 ### Créer une délibération
 POST {{baseUrl}}/deliberations

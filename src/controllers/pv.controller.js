@@ -193,6 +193,29 @@ exports.generatePvUe = async (req, res) => {
       [idue, annee, idsemestre, idclasse, annee]
     );
 
+    // Détail des évaluations EC : les notes sont conservées sur leur barème
+    // propre (CC /20, TP /30, SN /50…), la moyenne UE reste, elle, sur 100.
+    const [evaluationRows, ecNoteRows] = await Promise.all([
+      query(`SELECT e.IDEC,e.INTITULE,t.type,t.echelle
+             FROM ec e JOIN ec_evaluation_types t ON t.IDEC=e.IDEC
+             WHERE e.IDUE=? ORDER BY e.IDEC, FIELD(t.type,'CC','TP','SN')`, [idue]),
+      query(`SELECT n.MATRICULE,n.IDEC,n.note_cc,n.note_tp,n.note_sn
+             FROM ec_notes n JOIN ec e ON e.IDEC=n.IDEC
+             WHERE e.IDUE=? AND n.IDCLASSE=? AND n.ANNEE=?`, [idue, idclasse, annee]),
+    ]);
+    const evaluationColumns = evaluationRows.map((item, index) => ({
+      key: `${item.IDEC}-${item.type}`,
+      idec: Number(item.IDEC),
+      type: item.type,
+      echelle: Number(item.echelle),
+      label: evaluationRows.length === 1 ? `${item.type} /${item.echelle}` : `EC${evaluationRows.findIndex((row) => Number(row.IDEC) === Number(item.IDEC)) + 1} ${item.type}\n/${item.echelle}`,
+    }));
+    const notesByStudent = new Map();
+    ecNoteRows.forEach((note) => {
+      if (!notesByStudent.has(note.MATRICULE)) notesByStudent.set(note.MATRICULE, {});
+      notesByStudent.get(note.MATRICULE)[note.IDEC] = note;
+    });
+
     const doc = new PDFDocument({ margin: 40, size: 'A4', layout: 'landscape' });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="PV_UE_${idue}_${Date.now()}.pdf"`);
@@ -212,8 +235,14 @@ exports.generatePvUe = async (req, res) => {
     doc.text(`Filiere : ${classe.FILIERE_NOM || '-'}   |   Specialite : ${classe.SPECIALITE_INTITULE || '-'}`, 0, 170, { align: 'center' });
     doc.text(`Grade : ${classe.GRADE_INTITULE || classe.CODGRADE || '-'}   |   Niveau : ${classe.NIVEAU || '-'}   |   Annee : ${annee}   |   Semestre : ${idsemestre}`, 0, 185, { align: 'center' });
 
-    const headers = ['N', 'Matricule', 'Nom & Prenom', 'Moyenne /100', 'Credit', 'QdP', 'Mention', 'Decision'];
-    const colWidths = [30, 80, 220, 70, 50, 50, 60, 70];
+    if (evaluationColumns.length > 1) {
+      const labels = [...new Map(evaluationRows.map((item, index) => [item.IDEC, `EC${evaluationRows.findIndex((row) => Number(row.IDEC) === Number(item.IDEC)) + 1}: ${item.INTITULE || `Élément ${item.IDEC}`}`])).values()];
+      doc.fontSize(7).font('Helvetica').text(`Détail des EC : ${labels.join('   |   ')}`, 40, 198, { width: pageWidth - 80, align: 'center' });
+    }
+
+    const detailWidth = evaluationColumns.length ? Math.max(28, Math.floor(280 / evaluationColumns.length)) : 0;
+    const headers = ['N', 'Matricule', 'Nom & Prenom', ...evaluationColumns.map((column) => column.label), 'Moyenne\n/100', 'Credit', 'QdP', 'Mention', 'Decision'];
+    const colWidths = [24, 65, 135, ...evaluationColumns.map(() => detailWidth), 55, 40, 40, 50, 60];
 
     const tableRows = [];
     const decisionCounts = {};
@@ -221,10 +250,16 @@ exports.generatePvUe = async (req, res) => {
     rows.forEach((r, i) => {
       const decision = r.Decision || (r.MOYENNE !== null ? getGradeLocal(Number(r.MOYENNE)) : '-');
       decisionCounts[decision] = (decisionCounts[decision] || 0) + 1;
+      const studentNotes = notesByStudent.get(r.MATRICULE) || {};
       tableRows.push([
         (i + 1).toString(),
         r.MATRICULE,
         r.NOM,
+        ...evaluationColumns.map((column) => {
+          const note = studentNotes[column.idec];
+          const value = column.type === 'CC' ? note?.note_cc : column.type === 'TP' ? note?.note_tp : note?.note_sn;
+          return value !== null && value !== undefined ? Number(value).toFixed(2) : '-';
+        }),
         r.MOYENNE !== null ? Number(r.MOYENNE).toFixed(2) : '-',
         r.CREDIT !== null ? r.CREDIT : '-',
         r.QdP !== null ? Number(r.QdP).toFixed(2) : '-',
@@ -233,7 +268,7 @@ exports.generatePvUe = async (req, res) => {
       ]);
     });
 
-    let finalY = drawTable(doc, 210, headers, tableRows, colWidths, 40);
+    let finalY = drawTable(doc, evaluationColumns.length > 1 ? 212 : 210, headers, tableRows, colWidths, 40);
 
     // Statistiques : comptage dynamique par valeur de Decision reellement
     // rencontree (CA/CANT/NC/...), pas une liste de grades codee en dur.
