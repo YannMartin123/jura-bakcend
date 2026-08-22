@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { supabase } = require('../config/supabase');
+const { query } = require('../config/mysql');
 require('dotenv').config();
 
 exports.login = async (req, res) => {
@@ -11,14 +11,9 @@ exports.login = async (req, res) => {
   }
 
   try {
-    // Find user in Supabase
-    const { data: user, error } = await supabase
-      .from('utilisateur')
-      .select('*')
-      .eq('email', email)
-      .single();
-
-    if (error || !user) {
+    const users = await query('SELECT id, email, password, is_active FROM users WHERE email = ? LIMIT 1', [email]);
+    const user = users[0];
+    if (!user || !user.is_active) {
       return res.status(401).json({ message: 'Invalid email or password.' });
     }
 
@@ -29,8 +24,10 @@ exports.login = async (req, res) => {
     }
 
     // Generate JWT
+    const roles = await query(`SELECT r.name FROM roles r JOIN model_has_roles mr ON mr.role_id = r.id WHERE mr.model_id = ? AND mr.model_type LIKE '%User'`, [user.id]);
+    const role = roles.map((item) => item.name).includes('SUPER_ADMIN') ? 'SUPER_ADMIN' : roles[0]?.name || 'USER';
     const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
+      { id: user.id, email: user.email, role },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
@@ -41,7 +38,7 @@ exports.login = async (req, res) => {
       user: {
         id: user.id,
         email: user.email,
-        role: user.role
+        role
       }
     });
   } catch (err) {
@@ -58,14 +55,8 @@ exports.register = async (req, res) => {
   }
 
   try {
-    // Check if user already exists
-    const { data: existingUser } = await supabase
-      .from('utilisateur')
-      .select('id')
-      .eq('email', email)
-      .single();
-
-    if (existingUser) {
+    const existingUser = await query('SELECT id FROM users WHERE email = ? LIMIT 1', [email]);
+    if (existingUser.length) {
       return res.status(400).json({ message: 'User already exists.' });
     }
 
@@ -73,22 +64,9 @@ exports.register = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // Create user in Supabase
-    const { data: newUser, error } = await supabase
-      .from('utilisateur')
-      .insert([
-        { 
-          email, 
-          password: hashedPassword, 
-          role: role || 'ETUDIANT' 
-        }
-      ])
-      .select()
-      .single();
-
-    if (error) {
-      throw error;
-    }
+    const username = email.split('@')[0];
+    const result = await query('INSERT INTO users (username, name, email, password, locale, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, \'fr\', 1, NOW(), NOW())', [username, username, email, hashedPassword]);
+    const newUser = { id: result.insertId, email, role: role || 'USER' };
 
     res.status(201).json({
       message: 'User registered successfully. Pending admin validation if applicable.',

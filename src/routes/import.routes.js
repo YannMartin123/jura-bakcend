@@ -8,18 +8,20 @@ const upload = multer({ dest: 'uploads/' });
 
 router.post('/validate', 
   authenticateToken, 
-  authorizeRoles('ADMIN', 'ENSEIGNANT'), 
+  authorizeRoles('ADMIN', 'ENSEIGNANT', 'SUPER_ADMIN'), 
   upload.single('file'), 
   importController.validate
 );
 
 router.post('/confirm', 
   authenticateToken, 
-  authorizeRoles('ADMIN', 'ENSEIGNANT'), 
+  authorizeRoles('ADMIN', 'ENSEIGNANT', 'SUPER_ADMIN'), 
   importController.confirm
 );
 
 router.post('/traiter-excel',
+  authenticateToken,
+  authorizeRoles('ADMIN', 'ENSEIGNANT', 'SUPER_ADMIN'),
   upload.single('file'),
   importController.traiterExcel
 );

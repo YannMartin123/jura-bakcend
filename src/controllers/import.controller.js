@@ -3,6 +3,7 @@ const { supabase } = require('../config/supabase');
 const fs = require('fs');
 const xlsx = require('xlsx');
 const { randomUUID } = require('crypto');
+const { audit } = require('../services/audit.service');
 
 exports.validate = async (req, res) => {
   const file = req.file;
@@ -63,11 +64,14 @@ exports.confirm = async (req, res) => {
     // Récupérer l'annee_id depuis la session
     const { data: sessionData, error: sessionErr } = await supabase
       .from('session_correction')
-      .select('annee_academique')
+      .select('annee_academique, statut, enseignant_id')
       .eq('id_session', sessionId)
       .single();
 
     const anneeId = sessionData?.annee_academique || null;
+    if (sessionErr || !sessionData) return res.status(404).json({ message: 'Session de correction introuvable.' });
+    if (['CLOSE', 'ARCHIVEE'].includes(sessionData.statut)) return res.status(423).json({ message: 'Session clôturée ou archivée : import interdit.' });
+    if (req.user.role === 'ENSEIGNANT' && Number(sessionData.enseignant_id) !== Number(req.user.id)) return res.status(403).json({ message: 'Vous n’êtes pas responsable de cette session.' });
 
     // Process in batches or one by one for better error tracking
     for (const item of data) {
@@ -165,6 +169,10 @@ exports.confirm = async (req, res) => {
       }
     }
 
+    const batch = { id: importBatchId, ec_id: Number(ecId), session_id: Number(sessionId), annee_id: anneeId, auteur_id: req.user.id, total_lignes: data.length, lignes_importees: results.length, lignes_erreur: errors.length, statut: 'CONFIRMED' };
+    const { error: batchError } = await supabase.from('import_batch').insert(batch);
+    if (batchError) console.error('Import batch write failed:', batchError.message);
+    await audit({ user: req.user, action: 'IMPORT', module: 'IMPORTATION', resourceType: 'import_batch', resourceId: importBatchId, description: `Import de ${results.length} note(s), ${errors.length} erreur(s)`, newValues: batch, request: req });
     res.status(200).json({
       message: 'Import confirmed',
       importedCount: results.length,

@@ -1,9 +1,54 @@
 const express = require('express');
 const router = express.Router();
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
+const { requirePermission } = require('../middleware/permissions');
 const { supabase } = require('../config/supabase');
 const pdfService = require('../services/pdf.service');
 const path = require('path');
+const { audit } = require('../services/audit.service');
+
+// Écriture officielle d'une note. Les interfaces ne doivent pas écrire directement dans Supabase.
+router.put('/:noteId', authenticateToken, requirePermission('notes.write'), async (req, res) => {
+  const { noteId } = req.params;
+  const { valeur_cc, valeur_tp, valeur_sn, motif, classe_id } = req.body;
+  if (!classe_id || !motif?.trim()) return res.status(400).json({ message: 'classe_id et motif sont requis pour toute correction de note.' });
+  const values = { valeur_cc, valeur_tp, valeur_sn };
+  if (Object.values(values).some(value => value !== null && value !== undefined && (!Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) > 20))) {
+    return res.status(400).json({ message: 'Les notes doivent être comprises entre 0 et 20.' });
+  }
+  try {
+    const { data: old, error: readError } = await supabase.from('note').select('*').eq('id_note', noteId).single();
+    if (readError || !old) return res.status(404).json({ message: 'Note introuvable.' });
+    const { data: ec, error: ecError } = await supabase.from('ec').select('ue_id').eq('id_ec', old.ec_id).single();
+    if (ecError) throw ecError;
+    const { data: lock, error: lockError } = await supabase.from('ue_classe_annee_lock').select('statut').match({ ue_id: ec.ue_id, classe_id, annee_id: old.annee_id }).maybeSingle();
+    if (lockError) throw lockError;
+    if (lock && lock.statut !== 'OPEN') return res.status(423).json({ message: 'UE verrouillée pour cette classe et cette année.' });
+
+    const { data: decision } = await supabase.from('deliberation_decision')
+      .select('id, deliberation!inner(classe_id, annee_id, statut)')
+      .eq('etudiant_id', old.etudiant_id).eq('deliberation.classe_id', classe_id).eq('deliberation.annee_id', old.annee_id).eq('deliberation.statut', 'PUBLISHED').eq('decision', 'ADMIS').maybeSingle();
+    if (decision && req.user.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({ message: 'La note d’un étudiant admis ne peut être modifiée que par un super-administrateur autorisé.' });
+    }
+    if (decision) {
+      // Vérifie aussi l'autorisation explicite, même pour un compte qui revendique le rôle SUPER_ADMIN.
+      const { data: grant, error: grantError } = await supabase.from('role_permission').select('permission_code').eq('role', req.user.role).eq('permission_code', 'notes.override_admitted').maybeSingle();
+      if (grantError) throw grantError;
+      if (!grant) return res.status(403).json({ message: 'Permission notes.override_admitted requise.' });
+    }
+    const update = { valeur_cc, valeur_tp, valeur_sn, updated_at: new Date().toISOString() };
+    const { data, error } = await supabase.from('note').update(update).eq('id_note', noteId).select().single();
+    if (error) throw error;
+    const action = decision ? 'OVERRIDE_ADMITTED' : 'UPDATE';
+    await supabase.from('note_audit').insert({ note_id: Number(noteId), etudiant_id: old.etudiant_id, ec_id: old.ec_id, session_id: old.session_id, annee_id: old.annee_id, action, old_values: old, new_values: data, motif: motif.trim(), utilisateur_id: req.user.id });
+    await audit({ user: req.user, action, module: 'NOTES', resourceType: 'note', resourceId: noteId, description: motif.trim(), oldValues: old, newValues: data, request: req });
+    res.json(data);
+  } catch (error) {
+    console.error('Erreur de correction note:', error);
+    res.status(500).json({ message: 'Correction de note impossible.', detail: error.message });
+  }
+});
 
 // ─── Route existante : Export PV PDF ──────────────────────────────────────────
 router.get('/export/:ecId', 

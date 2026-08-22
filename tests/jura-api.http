@@ -1,0 +1,175 @@
+@baseUrl = http://localhost:5000/api
+@adminToken = REPLACE_WITH_ADMIN_JWT
+@teacherToken = REPLACE_WITH_TEACHER_JWT
+@superAdminToken = REPLACE_WITH_SUPER_ADMIN_JWT
+@academicYear = 2027
+@classeId = 1
+@ueId = 1
+@ecId = 1
+@sessionId = 1
+@noteId = 1
+@studentId = 1
+
+### Santé
+GET http://localhost:5000/health
+
+### Connexion API : copier le token retourné dans une variable ci-dessus
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@example.test",
+  "password": "change-me"
+}
+
+### Créer une année académique (permission academic_year.manage)
+POST {{baseUrl}}/governance/academic-years
+Authorization: Bearer {{superAdminToken}}
+Content-Type: application/json
+
+{
+  "id": "{{academicYear}}",
+  "date_debut": "2026-09-01",
+  "date_fin": "2027-07-31"
+}
+
+### Activer l'année (transaction SQL)
+POST {{baseUrl}}/governance/academic-years/{{academicYear}}/activate
+Authorization: Bearer {{superAdminToken}}
+
+### Attribuer le rôle JURY à un utilisateur
+PATCH {{baseUrl}}/governance/users/2/role
+Authorization: Bearer {{superAdminToken}}
+Content-Type: application/json
+
+{ "role": "JURY" }
+
+### Attribuer une permission individuelle temporaire
+PUT {{baseUrl}}/governance/users/2/permissions/notes.override_admitted
+Authorization: Bearer {{superAdminToken}}
+Content-Type: application/json
+
+{ "expire_at": "2027-01-31T23:59:59Z" }
+
+### Verrouiller une UE de classe pour l'année
+POST {{baseUrl}}/academic-locks/lock
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "ue_id": {{ueId}},
+  "classe_id": {{classeId}},
+  "annee_id": "{{academicYear}}",
+  "motif": "Notes validées avant délibération"
+}
+
+### Consulter les verrous
+GET {{baseUrl}}/academic-locks?ue_id={{ueId}}&classe_id={{classeId}}&annee_id={{academicYear}}
+Authorization: Bearer {{teacherToken}}
+
+### Déverrouiller une UE (super-admin ou permission ue.unlock)
+POST {{baseUrl}}/academic-locks/unlock
+Authorization: Bearer {{superAdminToken}}
+Content-Type: application/json
+
+{
+  "ue_id": {{ueId}},
+  "classe_id": {{classeId}},
+  "annee_id": "{{academicYear}}",
+  "motif": "Correction autorisée par décision administrative"
+}
+
+### Créer/corriger une moyenne UE sur 100 (auditée ; interdite si UE verrouillée ou étudiant admis)
+PUT {{baseUrl}}/moyennes
+Authorization: Bearer {{teacherToken}}
+Content-Type: application/json
+
+{
+  "matricule": "ETU-2024-001",
+  "idue": {{ueId}},
+  "idsemestre": 1,
+  "annee": {{academicYear}},
+  "idclasse": {{classeId}},
+  "moyenne": 67.5,
+  "credit": 6,
+  "motif": "Correction après vérification de la note UE"
+}
+
+### Valider un fichier d'import de notes d'UE (/100)
+POST {{baseUrl}}/ue-import/validate
+Authorization: Bearer {{teacherToken}}
+Content-Type: multipart/form-data; boundary=JuraBoundary
+
+--JuraBoundary
+Content-Disposition: form-data; name="ecId"
+
+{{ecId}}
+--JuraBoundary
+Content-Disposition: form-data; name="isAnonymous"
+
+false
+--JuraBoundary
+Content-Disposition: form-data; name="file"; filename="notes-valides.csv"
+Content-Type: text/csv
+
+< ./fixtures/notes-valides.csv
+--JuraBoundary--
+
+### Confirmer un import (crée import_batch et l'audit)
+POST {{baseUrl}}/import/confirm
+Authorization: Bearer {{teacherToken}}
+Content-Type: application/json
+
+{
+  "idclasse": {{classeId}},
+  "idue": {{ueId}},
+  "idsemestre": 1,
+  "annee": {{academicYear}},
+  "credit": 6,
+  "fichier_nom": "notes-valides.csv",
+  "rows": [
+    { "matricule": "ETU-2024-001", "moyenne": 67.5 },
+    { "matricule": "ETU-2024-002", "moyenne": 72 }
+  ]
+}
+
+### Soumettre une session (contrôle de propriétaire et de complétude)
+POST {{baseUrl}}/sessions/{{sessionId}}/close
+Authorization: Bearer {{teacherToken}}
+
+### Créer une délibération
+POST {{baseUrl}}/deliberations
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "classe_id": {{classeId}},
+  "annee": {{academicYear}},
+  "cycle": "Licence",
+  "motif": "Délibération annuelle"
+}
+
+### Enregistrer les décisions (remplacer 1 par l'identifiant de délibération)
+PUT {{baseUrl}}/deliberations/1/decisions
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "decisions": [
+    { "matricule": "ETU-2024-001", "decision": "ADMIS", "mgp": 3.12, "credits_valides": 60 }
+  ]
+}
+
+### Générer le PV récapitulatif annuel d'une classe
+POST {{baseUrl}}/pv/generate-recap-classe
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{ "idclasse": {{classeId}}, "annee": "{{academicYear}}" }
+
+### Générer le PV individuel de cycle
+POST {{baseUrl}}/pv/generate-recap
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{ "matricule": "ETU-2024-001", "grade": "Licence" }

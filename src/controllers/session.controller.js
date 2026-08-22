@@ -1,4 +1,5 @@
 const { supabase } = require('../config/supabase');
+const { audit } = require('../services/audit.service');
 
 exports.getActiveSessions = async (req, res) => {
   const teacherId = req.user.id;
@@ -27,8 +28,15 @@ exports.closeSession = async (req, res) => {
   const { id } = req.params;
 
   try {
-    // 1. Check if all grades are entered (business logic)
-    // 2. Update status to 'CLOSE'
+    const { data: existing, error: existingError } = await supabase.from('session_correction').select('*').eq('id_session', id).single();
+    if (existingError || !existing) return res.status(404).json({ message: 'Session introuvable.' });
+    if (req.user.role === 'ENSEIGNANT' && Number(existing.enseignant_id) !== Number(req.user.id)) return res.status(403).json({ message: 'Vous n’êtes pas responsable de cette session.' });
+    if (existing.statut !== 'OUVERTE') return res.status(409).json({ message: 'Cette session n’est pas ouverte.' });
+
+    const { count, error: countError } = await supabase.from('note').select('*', { count: 'exact', head: true }).eq('session_id', id).or('valeur_cc.is.null,valeur_tp.is.null,valeur_sn.is.null');
+    if (countError) throw countError;
+    if (count > 0) return res.status(409).json({ message: 'Soumission impossible : des notes obligatoires sont absentes.' });
+
     const { data, error } = await supabase
       .from('session_correction')
       .update({ 
@@ -41,6 +49,8 @@ exports.closeSession = async (req, res) => {
       .single();
 
     if (error) throw error;
+
+    await audit({ user: req.user, action: 'CLOSE', module: 'SOUMISSION', resourceType: 'session_correction', resourceId: id, description: 'Soumission et clôture de session', oldValues: existing, newValues: data, request: req });
 
     // 3. Trigger PV generation or other tasks (could be async)
     

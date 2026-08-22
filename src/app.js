@@ -25,9 +25,14 @@ app.get('/health', (req, res) => {
 // Routes placeholders
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/import', require('./routes/import.routes'));
+app.use('/api/ue-import', require('./routes/ue-import.routes'));
 app.use('/api/sessions', require('./routes/session.routes'));
 app.use('/api/notes', require('./routes/note.routes'));
+app.use('/api/moyennes', require('./routes/moyenne.routes'));
 app.use('/api/pv', require('./routes/pv.routes'));
+app.use('/api/governance', require('./routes/governance.routes'));
+app.use('/api/academic-locks', require('./routes/academic-lock.routes'));
+app.use('/api/deliberations', require('./routes/deliberation.routes'));
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {

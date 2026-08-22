@@ -1,7 +1,8 @@
 const jwt = require('jsonwebtoken');
+const { query } = require('../config/mysql');
 require('dotenv').config();
 
-const authenticateToken = (req, res, next) => {
+const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
@@ -12,9 +13,14 @@ const authenticateToken = (req, res, next) => {
   try {
     const verified = jwt.verify(token, process.env.JWT_SECRET);
     req.user = verified;
-    next();
+    return next();
   } catch (err) {
-    res.status(403).json({ message: 'Invalid or expired token.' });
+    // Le jeton doit être émis par l'API MySQL/Laravel de JURA.
+    try {
+      return res.status(403).json({ message: 'Invalid or expired token.' });
+    } catch (fallbackError) {
+      return res.status(403).json({ message: 'Invalid or expired token.' });
+    }
   }
 };
 
