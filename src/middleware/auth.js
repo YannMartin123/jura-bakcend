@@ -12,6 +12,16 @@ const authenticateToken = async (req, res, next) => {
 
   try {
     const verified = jwt.verify(token, process.env.JWT_SECRET);
+    const accounts = await query('SELECT is_active, password_changed_at FROM users WHERE id = ? LIMIT 1', [verified.id]);
+    const account = accounts[0];
+    if (!account || !account.is_active) {
+      return res.status(401).json({ message: 'Compte introuvable ou désactivé.' });
+    }
+    const isPasswordChangeRequest = req.method === 'POST'
+      && req.originalUrl.split('?')[0] === '/api/auth/change-password';
+    if (!account.password_changed_at && !isPasswordChangeRequest) {
+      return res.status(403).json({ message: 'Vous devez modifier votre mot de passe initial avant d’accéder à l’application.' });
+    }
     req.user = verified;
     return next();
   } catch (err) {

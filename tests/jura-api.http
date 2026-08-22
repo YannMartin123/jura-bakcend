@@ -23,6 +23,64 @@ Content-Type: application/json
   "password": "change-me"
 }
 
+### Créer un compte utilisateur (SUPER_ADMIN uniquement ; aucun rôle attribué ici)
+POST {{baseUrl}}/governance/users
+Authorization: Bearer {{superAdminToken}}
+Content-Type: application/json
+
+{
+  "username": "j.dupont",
+  "name": "Jean Dupont",
+  "email": "jean.dupont@example.test",
+  "password": "Provisoire-2026!"
+}
+
+### Lister les comptes et leur état (SUPER_ADMIN uniquement)
+GET {{baseUrl}}/governance/accounts
+Authorization: Bearer {{superAdminToken}}
+
+### Désactiver ou réactiver un compte (SUPER_ADMIN uniquement)
+PATCH {{baseUrl}}/governance/accounts/2/status
+Authorization: Bearer {{superAdminToken}}
+Content-Type: application/json
+
+{
+  "is_active": false
+}
+
+### Réinitialiser le mot de passe provisoire d'un compte (SUPER_ADMIN uniquement)
+POST {{baseUrl}}/governance/accounts/2/reset-password
+Authorization: Bearer {{superAdminToken}}
+Content-Type: application/json
+
+{
+  "password": "NouveauProvisoire-2026!"
+}
+
+### Remplacer le mot de passe provisoire (utiliser le JWT reçu à la connexion)
+POST {{baseUrl}}/auth/change-password
+Authorization: Bearer {{teacherToken}}
+Content-Type: application/json
+
+{
+  "currentPassword": "Provisoire-2026!",
+  "newPassword": "MotDePassePersonnel-2026!",
+  "confirmPassword": "MotDePassePersonnel-2026!"
+}
+
+### Consulter son profil et ses rôles
+GET {{baseUrl}}/auth/me
+Authorization: Bearer {{adminToken}}
+
+### Mettre à jour son nom affiché
+PUT {{baseUrl}}/auth/profile
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Administrateur JURA"
+}
+
 ### Créer une année académique (permission academic_year.manage)
 POST {{baseUrl}}/governance/academic-years
 Authorization: Bearer {{superAdminToken}}

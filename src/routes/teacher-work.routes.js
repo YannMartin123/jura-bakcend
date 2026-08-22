@@ -65,8 +65,10 @@ router.get('/gradebook/:classeId/:ueId', async (req, res, next) => {
     const classeId = Number(req.params.classeId); const ueId = Number(req.params.ueId);
     const annee = await getActiveYear(connection);
     await assertCanManageUe({ user: req.user, idue: ueId, idclasse: classeId, annee });
-    const [assignment] = await connection.query('SELECT 1 FROM teacher_ue_assignments WHERE user_id=? AND IDCLASSE=? AND IDUE=? AND ANNEE=? LIMIT 1', [req.user.id, classeId, ueId, annee]);
-    if (!assignment[0] && req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'UE non affectée à cet enseignant.' });
+    if (req.user.role === 'ENSEIGNANT') {
+      const [assignment] = await connection.query('SELECT 1 FROM teacher_ue_assignments WHERE user_id=? AND IDCLASSE=? AND IDUE=? AND ANNEE=? LIMIT 1', [req.user.id, classeId, ueId, annee]);
+      if (!assignment[0]) return res.status(403).json({ message: 'UE non affectée à cet enseignant.' });
+    }
     const context = await getUeContext(connection, classeId, ueId, annee);
     
     const isRattrapage = req.query.rattrapage === 'true';
@@ -97,8 +99,10 @@ router.put('/gradebook', requirePermission('ue_notes.write'), async (req, res, n
     if (!classe_id || !ue_id || !Array.isArray(rows) || !rows.length || !motif?.trim()) return res.status(400).json({ message: 'classe_id, ue_id, rows et motif sont requis.' });
     const annee = await getActiveYear(connection);
     await assertCanManageUe({ user: req.user, idue: Number(ue_id), idclasse: Number(classe_id), annee });
-    const [assignment] = await connection.query('SELECT 1 FROM teacher_ue_assignments WHERE user_id=? AND IDCLASSE=? AND IDUE=? AND ANNEE=? LIMIT 1', [req.user.id, classe_id, ue_id, annee]);
-    if (!assignment[0] && req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message: 'UE non affectée à cet enseignant.' });
+    if (req.user.role === 'ENSEIGNANT') {
+      const [assignment] = await connection.query('SELECT 1 FROM teacher_ue_assignments WHERE user_id=? AND IDCLASSE=? AND IDUE=? AND ANNEE=? LIMIT 1', [req.user.id, classe_id, ue_id, annee]);
+      if (!assignment[0]) return res.status(403).json({ message: 'UE non affectée à cet enseignant.' });
+    }
     const context = await getUeContext(connection, Number(classe_id), Number(ue_id), annee);
     const [locks] = await connection.query('SELECT statut FROM ue_class_locks WHERE IDCLASSE=? AND IDUE=? AND ANNEE=? LIMIT 1', [classe_id, ue_id, annee]);
     if (locks[0] && locks[0].statut !== 'OPEN') return res.status(423).json({ message: 'UE verrouillée : les notes ne peuvent plus être modifiées.' });
@@ -219,8 +223,10 @@ router.post('/submit', requirePermission('ue_notes.submit'), async (req, res, ne
     if (!classe_id || !ue_id) return res.status(400).json({ message:'classe_id et ue_id requis.' });
     const active = (await connection.query('SELECT annee FROM academic_years WHERE est_active=1 LIMIT 1'))[0][0];
     if (!active) return res.status(409).json({ message:'Aucune année active.' });
-    const assigned = (await connection.query('SELECT 1 FROM teacher_ue_assignments WHERE user_id=? AND IDCLASSE=? AND IDUE=? AND ANNEE=?', [req.user.id,classe_id,ue_id,active.annee]))[0];
-    if (!assigned.length && req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ message:'UE non affectée à cet enseignant.' });
+    if (req.user.role === 'ENSEIGNANT') {
+      const assigned = (await connection.query('SELECT 1 FROM teacher_ue_assignments WHERE user_id=? AND IDCLASSE=? AND IDUE=? AND ANNEE=?', [req.user.id,classe_id,ue_id,active.annee]))[0];
+      if (!assigned.length) return res.status(403).json({ message:'UE non affectée à cet enseignant.' });
+    }
     const [lock] = await connection.query('SELECT statut FROM ue_class_locks WHERE IDCLASSE=? AND IDUE=? AND ANNEE=? LIMIT 1', [classe_id, ue_id, active.annee]);
     if (lock[0] && lock[0].statut !== 'OPEN') return res.status(423).json({ message: 'Cette UE est déjà soumise et verrouillée.' });
     const context = await getUeContext(connection, Number(classe_id), Number(ue_id), Number(active.annee));

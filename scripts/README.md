@@ -27,6 +27,8 @@ node scripts/create-user.js admin "Administrateur JURA" admin@jura.local "MotDeP
 
 Le rôle est optionnel, mais il est recommandé de fournir `SUPER_ADMIN` au premier compte. Le mot de passe est enregistré sous forme chiffrée (hachée) ; il ne peut pas être relu.
 
+Pour la création quotidienne de comptes, le `SUPER_ADMIN` peut utiliser la page `/dashboard/admin/comptes`. Les rôles restent attribués séparément dans `/dashboard/admin/acces`. Après exécution de la migration `2026_08_22_user_initial_password.sql`, le mot de passe d'un nouveau compte est provisoire et doit être remplacé à la première connexion.
+
 ## Attribuer un rôle ou une permission
 
 ```powershell
