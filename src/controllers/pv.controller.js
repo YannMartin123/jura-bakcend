@@ -100,6 +100,85 @@ const unpivotUEs = (row) => {
   return ues;
 };
 
+// ----------------------------------------------------------------------
+// NOUVEAU SCHEMA UNIFIE EC/UE (migration "EC-miroir")
+// ----------------------------------------------------------------------
+// Depuis la migration, TOUTE UE passe par au moins un EC :
+//   - un vrai EC saisi manuellement (origine = 'SAISIE'), potentiellement
+//     plusieurs par UE (nouveau systeme) ;
+//   - ou un EC-miroir genere automatiquement (origine = 'AUTO_UE_SEULE')
+//     quand l'UE n'a pas d'EC declare (ancien systeme). L'UE est alors
+//     litteralement traitee comme sa propre EC.
+// La table de notes est donc unique (`notes`, ex-`ec_notes`), indexee sur
+// IDEC dans tous les cas -- ce controleur n'a plus besoin de distinguer
+// les deux systemes, il lit toujours par IDEC.
+//
+// Sur le PV d'UE : meme si l'UE a plusieurs EC portant chacun CC/TP/SN, on
+// n'affiche PAS une colonne par EC. On affiche UNE seule colonne par type
+// d'evaluation (CC, TP, SN), en sommant les notes de cette meme colonne sur
+// tous les EC de l'UE -- suivie de la moyenne finale /100 (qui reste issue
+// de `Moyennes`, deja calculee en amont).
+// ----------------------------------------------------------------------
+
+// Construit les colonnes agregees CC/TP/SN pour une UE, a partir des types
+// d'evaluation declares sur l'ensemble de ses EC (un seul EC si UE "seule",
+// plusieurs sinon). Un type n'apparait qu'une fois, avec son echelle totale
+// (somme des echelles des EC qui portent ce type).
+const buildEvalSummaryColumns = (evaluationRows) => {
+  const echelleTotals = { CC: 0, TP: 0, SN: 0 };
+  const present = { CC: false, TP: false, SN: false };
+
+  evaluationRows.forEach((row) => {
+    echelleTotals[row.type] += Number(row.echelle);
+    present[row.type] = true;
+  });
+
+  const columns = [];
+  if (present.CC) columns.push({ type: 'CC', label: `CC\n/${echelleTotals.CC}` });
+  if (present.TP) columns.push({ type: 'TP', label: `TP\n/${echelleTotals.TP}` });
+  if (present.SN) columns.push({ type: 'SN', label: `SN\n/${echelleTotals.SN}` });
+
+  return columns;
+};
+
+// Pour un etudiant donne, somme les notes de chaque type (CC/TP/SN) sur
+// l'ensemble des EC de l'UE. hasValue[type] distingue "0 obtenu" de
+// "pas encore saisi / non concerne" (affiche '-').
+const sumStudentEvalByType = (ecIdsOfUE, studentNotesByIdec) => {
+  const sums = { CC: 0, TP: 0, SN: 0 };
+  const hasValue = { CC: false, TP: false, SN: false };
+
+  ecIdsOfUE.forEach((idec) => {
+    const note = studentNotesByIdec[idec];
+    if (!note) return;
+    if (note.note_cc !== null && note.note_cc !== undefined) {
+      sums.CC += Number(note.note_cc);
+      hasValue.CC = true;
+    }
+    if (note.note_tp !== null && note.note_tp !== undefined) {
+      sums.TP += Number(note.note_tp);
+      hasValue.TP = true;
+    }
+    if (note.note_sn !== null && note.note_sn !== undefined) {
+      sums.SN += Number(note.note_sn);
+      hasValue.SN = true;
+    }
+  });
+
+  return { sums, hasValue };
+};
+
+// Legende optionnelle listant les EC qui composent l'UE (utile seulement
+// quand l'UE a plusieurs vrais EC ; une UE-miroir n'a qu'un seul EC, donc
+// rien a lister).
+const buildComposanteCaption = (evaluationRows) => {
+  const distinct = [...new Map(evaluationRows.map((r) => [Number(r.IDEC), r])).values()];
+  if (distinct.length <= 1) return null;
+  return distinct
+    .map((r, idx) => `EC${idx + 1}: ${r.INTITULE || `Element ${r.IDEC}`}`)
+    .join('   |   ');
+};
+
 // FIX (repris de la version precedente) : trace un tableau avec hauteur de
 // ligne dynamique (gere le texte qui wrap) + saut de page calcule AVANT de
 // dessiner la ligne.
@@ -235,27 +314,27 @@ exports.generatePvUe = async (req, res) => {
       [idue, annee, semBase, idue, annee, semRattrapage, idclasse, annee]
     );
 
-    // Détail des évaluations EC : les notes sont conservées sur leur barème
-    // propre (CC /20, TP /30, SN /50…), la moyenne UE reste, elle, sur 100.
+    // Types d'evaluation de TOUS les EC de l'UE (EC-miroir compris) + notes
+    // brutes correspondantes. Peu importe qu'il y ait 1 EC (ancien systeme /
+    // EC-miroir) ou plusieurs (nouveau systeme) : on lit toujours par IDEC,
+    // puis on agrege CC/TP/SN en 3 colonnes uniques au niveau de l'UE.
     const [evaluationRows, ecNoteRows] = await Promise.all([
-      query(`SELECT e.IDEC,e.INTITULE,t.type,t.echelle
-             FROM ec e JOIN ec_evaluation_types t ON t.IDEC=e.IDEC
-             WHERE e.IDUE=? ORDER BY e.IDEC, FIELD(t.type,'CC','TP','SN')`, [idue]),
-      query(`SELECT n.MATRICULE,n.IDEC,n.note_cc,n.note_tp,n.note_sn
-             FROM ec_notes n JOIN ec e ON e.IDEC=n.IDEC
-             WHERE e.IDUE=? AND n.IDCLASSE=? AND n.ANNEE=?`, [idue, idclasse, annee]),
+      query(`SELECT e.IDEC, e.INTITULE, t.type, t.echelle
+             FROM ec e JOIN ec_evaluation_types t ON t.IDEC = e.IDEC
+             WHERE e.IDUE = ? ORDER BY e.IDEC, FIELD(t.type,'CC','TP','SN')`, [idue]),
+      query(`SELECT n.MATRICULE, n.IDEC, n.note_cc, n.note_tp, n.note_sn
+             FROM notes n JOIN ec e ON e.IDEC = n.IDEC
+             WHERE e.IDUE = ? AND n.IDCLASSE = ? AND n.ANNEE = ?`, [idue, idclasse, annee]),
     ]);
-    const evaluationColumns = evaluationRows.map((item, index) => ({
-      key: `${item.IDEC}-${item.type}`,
-      idec: Number(item.IDEC),
-      type: item.type,
-      echelle: Number(item.echelle),
-      label: evaluationRows.length === 1 ? `${item.type} /${item.echelle}` : `EC${evaluationRows.findIndex((row) => Number(row.IDEC) === Number(item.IDEC)) + 1} ${item.type}\n/${item.echelle}`,
-    }));
+
+    const ecIdsOfUE = [...new Set(evaluationRows.map((r) => Number(r.IDEC)))];
+    const evalColumns = buildEvalSummaryColumns(evaluationRows);
+    const composanteCaption = buildComposanteCaption(evaluationRows);
+
     const notesByStudent = new Map();
     ecNoteRows.forEach((note) => {
       if (!notesByStudent.has(note.MATRICULE)) notesByStudent.set(note.MATRICULE, {});
-      notesByStudent.get(note.MATRICULE)[note.IDEC] = note;
+      notesByStudent.get(note.MATRICULE)[Number(note.IDEC)] = note;
     });
 
     const doc = new PDFDocument({ margin: 40, size: 'A4', layout: 'landscape' });
@@ -277,14 +356,13 @@ exports.generatePvUe = async (req, res) => {
     doc.text(`Filiere : ${classe.FILIERE_NOM || '-'}   |   Specialite : ${classe.SPECIALITE_INTITULE || '-'}`, 0, 170, { align: 'center' });
     doc.text(`Grade : ${classe.GRADE_INTITULE || classe.CODGRADE || '-'}   |   Niveau : ${classe.NIVEAU || '-'}   |   Annee : ${annee}   |   Semestre : ${idsemestre}`, 0, 185, { align: 'center' });
 
-    if (evaluationColumns.length > 1) {
-      const labels = [...new Map(evaluationRows.map((item, index) => [item.IDEC, `EC${evaluationRows.findIndex((row) => Number(row.IDEC) === Number(item.IDEC)) + 1}: ${item.INTITULE || `Élément ${item.IDEC}`}`])).values()];
-      doc.fontSize(7).font('Helvetica').text(`Détail des EC : ${labels.join('   |   ')}`, 40, 198, { width: pageWidth - 80, align: 'center' });
+    if (composanteCaption) {
+      doc.fontSize(7).font('Helvetica').text(`Composantes de l'UE : ${composanteCaption}`, 40, 198, { width: pageWidth - 80, align: 'center' });
     }
 
-    const detailWidth = evaluationColumns.length ? Math.max(28, Math.floor(280 / evaluationColumns.length)) : 0;
-    const headers = ['N', 'Matricule', 'Nom & Prenom', ...evaluationColumns.map((column) => column.label), 'Moyenne\n/100', 'Credit', 'QdP', 'Mention', 'Decision'];
-    const colWidths = [24, 65, 135, ...evaluationColumns.map(() => detailWidth), 55, 40, 40, 50, 60];
+    const tableTop = composanteCaption ? 212 : 210;
+    const headers = ['N', 'Matricule', 'Nom & Prenom', ...evalColumns.map((c) => c.label), 'Moyenne\n/100', 'Credit', 'QdP', 'Mention', 'Decision'];
+    const colWidths = [24, 65, 135, ...evalColumns.map(() => 55), 55, 40, 40, 50, 60];
 
     const tableRows = [];
     const decisionCounts = {};
@@ -293,15 +371,13 @@ exports.generatePvUe = async (req, res) => {
       const decision = r.Decision || (r.MOYENNE !== null ? getGradeLocal(Number(r.MOYENNE)) : '-');
       decisionCounts[decision] = (decisionCounts[decision] || 0) + 1;
       const studentNotes = notesByStudent.get(r.MATRICULE) || {};
+      const { sums, hasValue } = sumStudentEvalByType(ecIdsOfUE, studentNotes);
+
       tableRows.push([
         (i + 1).toString(),
         r.MATRICULE,
         r.NOM,
-        ...evaluationColumns.map((column) => {
-          const note = studentNotes[column.idec];
-          const value = column.type === 'CC' ? note?.note_cc : column.type === 'TP' ? note?.note_tp : note?.note_sn;
-          return value !== null && value !== undefined ? Number(value).toFixed(2) : '-';
-        }),
+        ...evalColumns.map((col) => (hasValue[col.type] ? sums[col.type].toFixed(2) : '-')),
         r.MOYENNE !== null ? Number(r.MOYENNE).toFixed(2) : '-',
         r.CREDIT !== null ? r.CREDIT : '-',
         r.QdP !== null ? Number(r.QdP).toFixed(2) : (r.MOYENNE !== null ? getQdpLocal(Number(r.MOYENNE)).toFixed(2) : '-'),
@@ -310,7 +386,7 @@ exports.generatePvUe = async (req, res) => {
       ]);
     });
 
-    let finalY = drawTable(doc, evaluationColumns.length > 1 ? 212 : 210, headers, tableRows, colWidths, 40);
+    let finalY = drawTable(doc, tableTop, headers, tableRows, colWidths, 40);
 
     // Statistiques : comptage dynamique par valeur de Decision reellement
     // rencontree (CA/CANT/NC/...), pas une liste de grades codee en dur.
@@ -395,28 +471,22 @@ exports.generatePvUeRattrapage = async (req, res) => {
     );
 
     const [evaluationRows, ecNoteRows] = await Promise.all([
-      query(`SELECT e.IDEC,e.INTITULE,t.type,t.echelle
-             FROM ec e JOIN ec_evaluation_types t ON t.IDEC=e.IDEC
-             WHERE e.IDUE=? ORDER BY e.IDEC, FIELD(t.type,'CC','TP','SN')`, [idue]),
-      query(`SELECT n.MATRICULE,n.IDEC,n.note_cc,n.note_tp,n.note_sn
-             FROM ec_notes n JOIN ec e ON e.IDEC=n.IDEC
-             WHERE e.IDUE=? AND n.IDCLASSE=? AND n.ANNEE=?`, [idue, idclasse, annee]),
+      query(`SELECT e.IDEC, e.INTITULE, t.type, t.echelle
+             FROM ec e JOIN ec_evaluation_types t ON t.IDEC = e.IDEC
+             WHERE e.IDUE = ? ORDER BY e.IDEC, FIELD(t.type,'CC','TP','SN')`, [idue]),
+      query(`SELECT n.MATRICULE, n.IDEC, n.note_cc, n.note_tp, n.note_sn
+             FROM notes n JOIN ec e ON e.IDEC = n.IDEC
+             WHERE e.IDUE = ? AND n.IDCLASSE = ? AND n.ANNEE = ?`, [idue, idclasse, annee]),
     ]);
 
-    const evaluationColumns = evaluationRows.map((item) => ({
-      key: `${item.IDEC}-${item.type}`,
-      idec: Number(item.IDEC),
-      type: item.type,
-      echelle: Number(item.echelle),
-      label: evaluationRows.length === 1
-        ? `${item.type} /${item.echelle}`
-        : `EC${evaluationRows.findIndex((row) => Number(row.IDEC) === Number(item.IDEC)) + 1} ${item.type}\n/${item.echelle}`,
-    }));
+    const ecIdsOfUE = [...new Set(evaluationRows.map((r) => Number(r.IDEC)))];
+    const evalColumns = buildEvalSummaryColumns(evaluationRows);
+    const composanteCaption = buildComposanteCaption(evaluationRows);
 
     const notesByStudent = new Map();
     ecNoteRows.forEach((note) => {
       if (!notesByStudent.has(note.MATRICULE)) notesByStudent.set(note.MATRICULE, {});
-      notesByStudent.get(note.MATRICULE)[note.IDEC] = note;
+      notesByStudent.get(note.MATRICULE)[Number(note.IDEC)] = note;
     });
 
     const doc = new PDFDocument({ margin: 40, size: 'A4', layout: 'landscape' });
@@ -440,23 +510,19 @@ exports.generatePvUeRattrapage = async (req, res) => {
       0, 185, { align: 'center' }
     );
 
-    if (evaluationColumns.length > 1) {
-      const labels = [...new Map(evaluationRows.map((item) => [
-        item.IDEC,
-        `EC${evaluationRows.findIndex((row) => Number(row.IDEC) === Number(item.IDEC)) + 1}: ${item.INTITULE || `Element ${item.IDEC}`}`
-      ])).values()];
-      doc.fontSize(7).font('Helvetica').text(`Detail des EC : ${labels.join('   |   ')}`, 40, 198, { width: pageWidth - 80, align: 'center' });
+    if (composanteCaption) {
+      doc.fontSize(7).font('Helvetica').text(`Composantes de l'UE : ${composanteCaption}`, 40, 198, { width: pageWidth - 80, align: 'center' });
     }
 
-    const detailWidth = evaluationColumns.length ? Math.max(28, Math.floor(280 / evaluationColumns.length)) : 0;
-    const headers = ['N', 'Matricule', 'Nom & Prenom', ...evaluationColumns.map((col) => col.label), 'Moyenne\n/100', 'Credit', 'QdP', 'Mention', 'Decision'];
-    const colWidths = [24, 65, 135, ...evaluationColumns.map(() => detailWidth), 55, 40, 40, 50, 60];
+    const tableTop = composanteCaption ? 212 : 210;
+    const headers = ['N', 'Matricule', 'Nom & Prenom', ...evalColumns.map((c) => c.label), 'Moyenne\n/100', 'Credit', 'QdP', 'Mention', 'Decision'];
+    const colWidths = [24, 65, 135, ...evalColumns.map(() => 55), 55, 40, 40, 50, 60];
 
     if (!rows.length) {
       doc.fontSize(11).font('Helvetica').fillColor('#555');
       doc.text(
         'Aucun etudiant ne figure en session de rattrapage pour cette UE.',
-        40, evaluationColumns.length > 1 ? 220 : 215,
+        40, tableTop,
         { align: 'center', width: pageWidth - 80 }
       );
     } else {
@@ -467,15 +533,13 @@ exports.generatePvUeRattrapage = async (req, res) => {
         const decision = r.Decision || (r.MOYENNE !== null ? getGradeLocal(Number(r.MOYENNE)) : '-');
         decisionCounts[decision] = (decisionCounts[decision] || 0) + 1;
         const studentNotes = notesByStudent.get(r.MATRICULE) || {};
+        const { sums, hasValue } = sumStudentEvalByType(ecIdsOfUE, studentNotes);
+
         tableRows.push([
           (i + 1).toString(),
           r.MATRICULE,
           r.NOM,
-          ...evaluationColumns.map((col) => {
-            const note = studentNotes[col.idec];
-            const value = col.type === 'CC' ? note?.note_cc : col.type === 'TP' ? note?.note_tp : note?.note_sn;
-            return value !== null && value !== undefined ? Number(value).toFixed(2) : '-';
-          }),
+          ...evalColumns.map((col) => (hasValue[col.type] ? sums[col.type].toFixed(2) : '-')),
           r.MOYENNE !== null ? Number(r.MOYENNE).toFixed(2) : '-',
           r.CREDIT !== null ? r.CREDIT : '-',
           r.QdP !== null ? Number(r.QdP).toFixed(2) : (r.MOYENNE !== null ? getQdpLocal(Number(r.MOYENNE)).toFixed(2) : '-'),
@@ -484,7 +548,7 @@ exports.generatePvUeRattrapage = async (req, res) => {
         ]);
       });
 
-      let finalY = drawTable(doc, evaluationColumns.length > 1 ? 212 : 210, headers, tableRows, colWidths, 40);
+      let finalY = drawTable(doc, tableTop, headers, tableRows, colWidths, 40);
 
       finalY += 30;
       doc.fontSize(10).font('Helvetica-Bold').fillColor('#000');
@@ -522,6 +586,9 @@ exports.generatePvUeRattrapage = async (req, res) => {
 // section 10 du schema : un niveau est admis si TOUTES ses lignes
 // (= tous les semestres presents pour ce niveau) portent DECISION = ADMIS ;
 // le cycle est admis si TOUS ses niveaux le sont.
+//
+// NB : ulmdpvrecap est une table de reporting a plat (deja pivotee), non
+// impactee par la migration EC-miroir -- aucun changement necessaire ici.
 // ============================================================================
 exports.generateRecap = async (req, res) => {
   try {
@@ -762,6 +829,9 @@ exports.generateRecap = async (req, res) => {
 //    dans la colonne Decision et '-' partout ailleurs -- jamais omis,
 //    jamais affiche comme admis (schema section 10 : l'absence de PV vaut
 //    refus).
+//
+// NB : comme generateRecap, cette fonction lit ulmdpvrecap (deja pivote au
+// niveau UE, pas au niveau EC) -- non impactee par la migration EC-miroir.
 // ============================================================================
 exports.generatePvRecapClasse = async (req, res) => {
   try {
