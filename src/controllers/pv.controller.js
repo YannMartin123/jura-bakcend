@@ -188,11 +188,11 @@ const drawTable = (doc, startY, headers, rows, colWidths, startX = 30) => {
   const totalTableWidth = colWidths.reduce((a, b) => a + b, 0);
 
   // En-tête du tableau (à plat, même trait que le corps du tableau)
-  const gridColor = '#94a3b8';
+  const gridColor = '#000000';
   const gridLineWidth = 0.75;
 
   doc.lineWidth(gridLineWidth).rect(startX, currentY, totalTableWidth, headerRowHeight).stroke(gridColor);
-  doc.fillColor('#1e293b').font('Helvetica-Bold').fontSize(7);
+  doc.fillColor('#000000').font('Helvetica-Bold').fontSize(7);
   let currentX = startX;
   headers.forEach((h, i) => {
     if (i > 0) {
@@ -450,18 +450,18 @@ exports.generatePvUe = async (req, res) => {
     const pageWidth = doc.page.width;
     drawHeader(doc, pageWidth, 18);
 
-    doc.fontSize(11).font('Helvetica-Bold').fillColor('#0f172a');
+    doc.fontSize(11).font('Helvetica-Bold').fillColor('#000000');
     doc.text("PROCES VERBAL DE L'UNITE D'ENSEIGNEMENT", 0, 70, { align: 'center' });
 
     const ueTitle = `${ue.CODUE || ''} - ${ue.INTITULE || ''}`.toUpperCase();
-    doc.fontSize(9.5).font('Helvetica-Bold').fillColor('#1e293b');
+    doc.fontSize(9.5).font('Helvetica-Bold').fillColor('#000000');
     doc.text(ueTitle, 0, 84, { align: 'center' });
 
-    doc.fontSize(8).font('Helvetica').fillColor('#334155');
+    doc.fontSize(8).font('Helvetica').fillColor('#000000');
     doc.text(`Filiere : ${classe.FILIERE_NOM || '-'}   |   Specialite : ${classe.SPECIALITE_INTITULE || '-'}   |   Grade : ${classe.GRADE_INTITULE || classe.CODGRADE || '-'}   |   Niveau : ${classe.NIVEAU || '-'}   |   Annee : ${annee}   |   Semestre : ${idsemestre}`, 0, 98, { align: 'center' });
 
     if (composanteCaption) {
-      doc.fontSize(6.5).font('Helvetica-Oblique').fillColor('#64748b').text(`Composantes de l'UE : ${composanteCaption}`, 30, 110, { width: pageWidth - 60, align: 'center' });
+      doc.fontSize(6.5).font('Helvetica-Oblique').fillColor('#000000').text(`Composantes de l'UE : ${composanteCaption}`, 30, 110, { width: pageWidth - 60, align: 'center' });
     }
 
     const tableTop = composanteCaption ? 122 : 114;
@@ -724,18 +724,18 @@ console.log('hasTP =', hasTP);
     const pageWidth = doc.page.width;
     drawHeader(doc, pageWidth, 18);
 
-    doc.fontSize(11).font('Helvetica-Bold').fillColor('#0f172a');
+    doc.fontSize(11).font('Helvetica-Bold').fillColor('#000000');
     doc.text("PROCES VERBAL DE RATTRAPAGE - UNITE D'ENSEIGNEMENT", 0, 70, { align: 'center' });
 
     const ueTitle = `${ue.CODUE || ''} - ${ue.INTITULE || ''}`.toUpperCase();
-    doc.fontSize(9.5).font('Helvetica-Bold').fillColor('#1e293b');
+    doc.fontSize(9.5).font('Helvetica-Bold').fillColor('#000000');
     doc.text(ueTitle, 0, 84, { align: 'center' });
 
-    doc.fontSize(8).font('Helvetica').fillColor('#334155');
+    doc.fontSize(8).font('Helvetica').fillColor('#000000');
     doc.text(`Filiere : ${classe.FILIERE_NOM || '-'}   |   Specialite : ${classe.SPECIALITE_INTITULE || '-'}   |   Grade : ${classe.GRADE_INTITULE || classe.CODGRADE || '-'}   |   Niveau : ${classe.NIVEAU || '-'}   |   Annee : ${annee}   |   Session : Rattrapage S${semBase} (Semestre ${semRattrapage})`, 0, 98, { align: 'center' });
 
     if (composanteCaption) {
-      doc.fontSize(6.5).font('Helvetica-Oblique').fillColor('#64748b').text(`Composantes de l'UE : ${composanteCaption}`, 30, 110, { width: pageWidth - 60, align: 'center' });
+      doc.fontSize(6.5).font('Helvetica-Oblique').fillColor('#000000').text(`Composantes de l'UE : ${composanteCaption}`, 30, 110, { width: pageWidth - 60, align: 'center' });
     }
 
     const tableTop = composanteCaption ? 122 : 114;
@@ -763,7 +763,7 @@ console.log('hasTP =', hasTP);
     const startX = 30;
 
     if (!rows.length) {
-      doc.fontSize(10).font('Helvetica').fillColor('#555');
+      doc.fontSize(10).font('Helvetica').fillColor('#000000');
       doc.text(
         'Aucun etudiant ne figure en session de rattrapage pour cette UE.',
         30, tableTop + 20,
@@ -830,7 +830,7 @@ console.log('hasTP =', hasTP);
       finalY = drawTable(doc, finalY + 6, statHeaders, [statRow], statColWidths, startX);
 
       finalY += 8;
-      doc.fontSize(6.5).font('Helvetica-Oblique').fillColor('#64748b');
+      doc.fontSize(6.5).font('Helvetica-Oblique').fillColor('#000000');
       doc.text("Decisions : CA (Credit Acquis, >=50)   |   CANT (Credit Acquis Non Compensable, 35-49)   |   NC (Non Compensable, 0-34)   |   EL (Elimine / Non Evalue)", startX, finalY);
     }
 
@@ -1228,9 +1228,9 @@ exports.generatePvRecapClasse = async (req, res) => {
     );
 
     const fixedHeaders = ['N', 'Matricule', 'Nom & Prenom', 'Niveau'];
-    const fixedWidths = [25, 65, 150, 45];
+    const fixedWidths = [25, 55, 130, 35];
     const tailHeaders = ['CAP', 'CHOI', '%CAP', 'MGP', 'Decision'];
-    const tailWidths = [35, 35, 40, 35, 70];
+    const tailWidths = [25, 25, 30, 25, 35];
 
     const usableWidth = pageWidth - 60;
     const fixedTotal = fixedWidths.reduce((a, b) => a + b, 0) + tailWidths.reduce((a, b) => a + b, 0);

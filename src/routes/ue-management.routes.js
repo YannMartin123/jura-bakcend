@@ -31,8 +31,10 @@ router.get('/options', async (req, res, next) => {
     const [filieres, years, classes] = await Promise.all([
       query('SELECT IDFILIERE,CODFILIERE,NOM FROM Filiere ORDER BY NOM'),
       query('SELECT annee,est_active FROM academic_years ORDER BY annee DESC'),
-      query(`SELECT c.IDCLASSE,c.NIVEAU,f.NOM AS FILIERE FROM Classe c
-             LEFT JOIN Filiere f ON f.IDFILIERE=c.IDFILIERE ORDER BY f.NOM,c.NIVEAU,c.IDCLASSE`),
+      query(`SELECT c.IDCLASSE,c.NIVEAU,f.NOM AS FILIERE,s.INTITULE AS SPECIALITE FROM Classe c
+             LEFT JOIN Filiere f ON f.IDFILIERE=c.IDFILIERE
+             LEFT JOIN Specialite s ON s.IDSPECIALITE=c.IDSPECIALITE
+             ORDER BY f.NOM,c.NIVEAU,c.IDCLASSE`),
     ]);
     res.json({ filieres, years, classes });
   } catch (error) { next(error); }
@@ -116,13 +118,228 @@ router.get('/:id/components', async (req, res, next) => {
 router.get('/:id/semesters', async (req, res, next) => {
   try {
     const rows = await query(`SELECT p.IDCLASSE,p.IDUE,p.ANNEE,p.CREDIT,p.CATEGORIE,ps.IDSEMESTRE,
-      c.NIVEAU,f.NOM AS FILIERE
+      c.NIVEAU,f.NOM AS FILIERE,s.INTITULE AS SPECIALITE
       FROM Programme p JOIN Classe c ON c.IDCLASSE=p.IDCLASSE
       LEFT JOIN Filiere f ON f.IDFILIERE=c.IDFILIERE
+      LEFT JOIN Specialite s ON s.IDSPECIALITE=c.IDSPECIALITE
       LEFT JOIN programme_semestres ps ON ps.IDCLASSE=p.IDCLASSE AND ps.IDUE=p.IDUE AND ps.ANNEE=p.ANNEE
       WHERE p.IDUE=? ORDER BY p.ANNEE DESC,f.NOM,c.NIVEAU,p.IDCLASSE`, [req.params.id]);
     res.json(rows);
   } catch (error) { next(error); }
+});
+
+router.post('/:id/programmes', async (req, res, next) => {
+  const connection = await pool.getConnection();
+  try {
+    const ue_id = Number(req.params.id);
+    const { classe_id, annee, credit, categorie, semestre } = req.body;
+    if (!classe_id || !annee || !credit) {
+      return res.status(400).json({ message: 'Classe, année et crédits sont requis.' });
+    }
+    const numCredit = Number(credit);
+    if (!Number.isInteger(numCredit) || numCredit <= 0) {
+      return res.status(400).json({ message: 'Le crédit doit être un entier strictement positif.' });
+    }
+    if (semestre && (!Number.isInteger(Number(semestre)) || Number(semestre) < 1 || Number(semestre) > 2)) {
+      return res.status(400).json({ message: 'Le semestre doit être 1 ou 2.' });
+    }
+    const ue = await getUe(ue_id);
+    if (!ue) return res.status(404).json({ message: 'UE introuvable.' });
+
+    await connection.beginTransaction();
+
+    const [existing] = await connection.query(
+      'SELECT 1 FROM Programme WHERE IDCLASSE=? AND IDUE=? AND ANNEE=? LIMIT 1',
+      [Number(classe_id), ue_id, Number(annee)]
+    );
+    if (existing.length > 0) {
+      await connection.rollback();
+      return res.status(409).json({ message: 'Cette UE est déjà programmée dans cette classe pour cette année.' });
+    }
+
+    const [used] = await connection.query('SELECT COALESCE(SUM(credits_ec), 0) AS total FROM ec WHERE IDUE=?', [ue_id]);
+    if (Number(used[0].total) > numCredit) {
+      await connection.rollback();
+      return res.status(409).json({ message: `Le crédit (${numCredit}) ne peut pas être inférieur au total des crédits EC configurés (${Number(used[0].total)}).` });
+    }
+
+    const cat = (categorie || 'FONDAMENTALE').trim().toUpperCase();
+    await connection.query(
+      'INSERT INTO Programme (IDCLASSE, IDUE, ANNEE, CATEGORIE, CREDIT, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())',
+      [Number(classe_id), ue_id, Number(annee), cat, numCredit]
+    );
+
+    if (semestre) {
+      await connection.query(
+        'INSERT INTO programme_semestres (IDCLASSE, IDUE, ANNEE, IDSEMESTRE, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW()) ON DUPLICATE KEY UPDATE IDSEMESTRE=VALUES(IDSEMESTRE), updated_at=NOW()',
+        [Number(classe_id), ue_id, Number(annee), Number(semestre)]
+      );
+    }
+
+    await connection.commit();
+
+    await audit({
+      user: req.user,
+      action: 'CREATE',
+      module: 'STRUCTURE',
+      resourceType: 'Programme',
+      resourceId: `${classe_id}-${ue_id}-${annee}`,
+      description: `Ajout UE ${ue.CODUE} au programme de la classe #${classe_id} (${annee})`,
+      newValues: { IDCLASSE: Number(classe_id), IDUE: ue_id, ANNEE: Number(annee), CATEGORIE: cat, CREDIT: numCredit, IDSEMESTRE: semestre ? Number(semestre) : null },
+      request: req
+    });
+
+    res.status(201).json({ success: true });
+  } catch (error) {
+    await connection.rollback();
+    next(error);
+  } finally {
+    connection.release();
+  }
+});
+
+router.put('/:id/programmes/:classeId/:annee', async (req, res, next) => {
+  const connection = await pool.getConnection();
+  try {
+    const ue_id = Number(req.params.id);
+    const classe_id = Number(req.params.classeId);
+    const annee = Number(req.params.annee);
+    const { credit, categorie, semestre } = req.body;
+
+    if (!credit) {
+      return res.status(400).json({ message: 'Le crédit est requis.' });
+    }
+    const numCredit = Number(credit);
+    if (!Number.isInteger(numCredit) || numCredit <= 0) {
+      return res.status(400).json({ message: 'Le crédit doit être un entier strictement positif.' });
+    }
+    if (semestre && (!Number.isInteger(Number(semestre)) || Number(semestre) < 1 || Number(semestre) > 2)) {
+      return res.status(400).json({ message: 'Le semestre doit être 1 ou 2.' });
+    }
+
+    const [progRows] = await connection.query(
+      'SELECT * FROM Programme WHERE IDCLASSE=? AND IDUE=? AND ANNEE=? LIMIT 1',
+      [classe_id, ue_id, annee]
+    );
+    if (!progRows[0]) {
+      return res.status(404).json({ message: 'Entrée de programme introuvable.' });
+    }
+
+    const [used] = await connection.query('SELECT COALESCE(SUM(credits_ec), 0) AS total FROM ec WHERE IDUE=?', [ue_id]);
+    if (Number(used[0].total) > numCredit) {
+      return res.status(409).json({ message: `Le crédit (${numCredit}) ne peut pas être inférieur au total des crédits EC configurés (${Number(used[0].total)}).` });
+    }
+
+    await connection.beginTransaction();
+
+    const cat = (categorie || progRows[0].CATEGORIE || 'FONDAMENTALE').trim().toUpperCase();
+    await connection.query(
+      'UPDATE Programme SET CREDIT=?, CATEGORIE=?, updated_at=NOW() WHERE IDCLASSE=? AND IDUE=? AND ANNEE=?',
+      [numCredit, cat, classe_id, ue_id, annee]
+    );
+
+    if (semestre) {
+      await connection.query(
+        'INSERT INTO programme_semestres (IDCLASSE, IDUE, ANNEE, IDSEMESTRE, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW()) ON DUPLICATE KEY UPDATE IDSEMESTRE=VALUES(IDSEMESTRE), updated_at=NOW()',
+        [classe_id, ue_id, annee, Number(semestre)]
+      );
+    }
+
+    await connection.commit();
+
+    await audit({
+      user: req.user,
+      action: 'UPDATE',
+      module: 'STRUCTURE',
+      resourceType: 'Programme',
+      resourceId: `${classe_id}-${ue_id}-${annee}`,
+      description: `Modification programme classe #${classe_id} UE ${ue_id} (${annee})`,
+      oldValues: progRows[0],
+      newValues: { IDCLASSE: classe_id, IDUE: ue_id, ANNEE: annee, CATEGORIE: cat, CREDIT: numCredit, IDSEMESTRE: semestre ? Number(semestre) : null },
+      request: req
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    await connection.rollback();
+    next(error);
+  } finally {
+    connection.release();
+  }
+});
+
+router.delete('/:id/programmes/:classeId/:annee', async (req, res, next) => {
+  const connection = await pool.getConnection();
+  try {
+    const ue_id = Number(req.params.id);
+    const classe_id = Number(req.params.classeId);
+    const annee = Number(req.params.annee);
+
+    const [progRows] = await connection.query(
+      'SELECT * FROM Programme WHERE IDCLASSE=? AND IDUE=? AND ANNEE=? LIMIT 1',
+      [classe_id, ue_id, annee]
+    );
+    if (!progRows[0]) {
+      return res.status(404).json({ message: 'Entrée de programme introuvable.' });
+    }
+
+    const [moyennes] = await connection.query(`
+      SELECT COUNT(*) AS total FROM Moyennes m
+      JOIN Inscript i ON i.MATRICULE=m.MATRICULE AND i.ANNEE=m.ANNEE
+      WHERE m.IDUE=? AND m.ANNEE=? AND i.IDCLASSE=?
+    `, [ue_id, annee, classe_id]);
+    if (Number(moyennes[0].total) > 0) {
+      return res.status(409).json({ message: 'Suppression impossible : des moyennes d’étudiants existent déjà pour cette classe et cette UE.' });
+    }
+
+    const [notes] = await connection.query(`
+      SELECT COUNT(*) AS total FROM notes n
+      JOIN ec e ON e.IDEC=n.IDEC
+      WHERE e.IDUE=? AND n.IDCLASSE=? AND n.ANNEE=?
+    `, [ue_id, classe_id, annee]);
+    if (Number(notes[0].total) > 0) {
+      return res.status(409).json({ message: 'Suppression impossible : des notes d’évaluation existent déjà pour cette classe et cette UE.' });
+    }
+
+    const [assignments] = await connection.query(
+      'SELECT COUNT(*) AS total FROM teacher_ue_assignments WHERE IDUE=? AND IDCLASSE=? AND ANNEE=?',
+      [ue_id, classe_id, annee]
+    );
+    if (Number(assignments[0].total) > 0) {
+      return res.status(409).json({ message: 'Suppression impossible : un enseignant est affecté à cette UE pour cette classe. Révoquez l’affectation d’abord.' });
+    }
+
+    const [locks] = await connection.query(
+      'SELECT COUNT(*) AS total FROM ue_class_locks WHERE IDUE=? AND IDCLASSE=? AND ANNEE=?',
+      [ue_id, classe_id, annee]
+    );
+    if (Number(locks[0].total) > 0) {
+      await connection.query('DELETE FROM ue_class_locks WHERE IDUE=? AND IDCLASSE=? AND ANNEE=?', [ue_id, classe_id, annee]);
+    }
+
+    await connection.beginTransaction();
+    await connection.query('DELETE FROM programme_semestres WHERE IDCLASSE=? AND IDUE=? AND ANNEE=?', [classe_id, ue_id, annee]);
+    await connection.query('DELETE FROM Programme WHERE IDCLASSE=? AND IDUE=? AND ANNEE=?', [classe_id, ue_id, annee]);
+    await connection.commit();
+
+    await audit({
+      user: req.user,
+      action: 'DELETE',
+      module: 'STRUCTURE',
+      resourceType: 'Programme',
+      resourceId: `${classe_id}-${ue_id}-${annee}`,
+      description: `Retrait UE ${ue_id} de la maquette de la classe #${classe_id} (${annee})`,
+      oldValues: progRows[0],
+      request: req
+    });
+
+    res.status(204).end();
+  } catch (error) {
+    await connection.rollback();
+    next(error);
+  } finally {
+    connection.release();
+  }
 });
 
 router.put('/:id/semesters', async (req, res, next) => {
