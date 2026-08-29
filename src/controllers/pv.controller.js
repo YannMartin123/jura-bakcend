@@ -182,42 +182,72 @@ const buildComposanteCaption = (evaluationRows) => {
 // FIX (repris de la version precedente) : trace un tableau avec hauteur de
 // ligne dynamique (gere le texte qui wrap) + saut de page calcule AVANT de
 // dessiner la ligne.
-const drawTable = (doc, startY, headers, rows, colWidths, startX = 40) => {
-  const headerRowHeight = 20;
+const drawTable = (doc, startY, headers, rows, colWidths, startX = 30) => {
+  const headerRowHeight = 15;
   let currentY = startY;
+  const totalTableWidth = colWidths.reduce((a, b) => a + b, 0);
 
-  doc.rect(startX, currentY, colWidths.reduce((a, b) => a + b, 0), headerRowHeight).fillAndStroke('#2d3e50', '#2d3e50');
-  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8);
+  // En-tête du tableau (à plat, même trait que le corps du tableau)
+  const gridColor = '#94a3b8';
+  const gridLineWidth = 0.75;
+
+  doc.lineWidth(gridLineWidth).rect(startX, currentY, totalTableWidth, headerRowHeight).stroke(gridColor);
+  doc.fillColor('#1e293b').font('Helvetica-Bold').fontSize(7);
   let currentX = startX;
   headers.forEach((h, i) => {
-    doc.text(h, currentX, currentY + 6, { width: colWidths[i], align: 'center' });
+    if (i > 0) {
+      doc.lineWidth(gridLineWidth).moveTo(currentX, currentY).lineTo(currentX, currentY + headerRowHeight).stroke(gridColor);
+    }
+    doc.text(h, currentX + 2, currentY + 4, { width: colWidths[i] - 4, align: 'left' });
     currentX += colWidths[i];
   });
 
   currentY += headerRowHeight;
-  doc.fillColor('#000000').font('Helvetica').fontSize(8);
+  doc.fillColor('#000000').font('Helvetica').fontSize(6.8);
 
-  rows.forEach((row) => {
+  rows.forEach((row, rowIndex) => {
     const cellHeights = row.map((cell, i) => {
       const text = cell !== null && cell !== undefined ? String(cell) : '-';
-      return doc.heightOfString(text, { width: colWidths[i] - 4 });
+      return doc.heightOfString(text, { width: colWidths[i] - 6 });
     });
-    const rowHeight = Math.max(20, Math.max(...cellHeights) + 8);
+    // Hauteur de ligne compacte pour économie maximale de papier
+    const rowHeight = Math.max(12.5, Math.max(...cellHeights) + 2.5);
 
-    if (currentY + rowHeight > doc.page.height - 50) {
+    if (currentY + rowHeight > doc.page.height - 32) {
       doc.addPage();
-      currentY = 40;
+      currentY = 25;
+
+      // Redessiner l'en-tête sur la nouvelle page (même trait que le corps du tableau)
+      doc.lineWidth(gridLineWidth).rect(startX, currentY, totalTableWidth, headerRowHeight).stroke(gridColor);
+      doc.fillColor('#1e293b').font('Helvetica-Bold').fontSize(7);
+      let hX = startX;
+      headers.forEach((h, i) => {
+        if (i > 0) {
+          doc.lineWidth(gridLineWidth).moveTo(hX, currentY).lineTo(hX, currentY + headerRowHeight).stroke(gridColor);
+        }
+        doc.text(h, hX + 2, currentY + 4, { width: colWidths[i] - 4, align: 'left' });
+        hX += colWidths[i];
+      });
+      currentY += headerRowHeight;
+      doc.fillColor('#000000').font('Helvetica').fontSize(6.8);
     }
 
+    // Alternance de couleur de fond très légère pour lisibilité
+    if (rowIndex % 2 === 1) {
+      doc.rect(startX, currentY, totalTableWidth, rowHeight).fill('#f8fafc');
+    }
+
+    doc.lineWidth(gridLineWidth).rect(startX, currentY, totalTableWidth, rowHeight).stroke(gridColor);
+    doc.fillColor('#000000');
+
     currentX = startX;
-    doc.rect(startX, currentY, colWidths.reduce((a, b) => a + b, 0), rowHeight).stroke();
     row.forEach((cell, i) => {
       if (i > 0) {
-        doc.moveTo(currentX, currentY).lineTo(currentX, currentY + rowHeight).stroke();
+        doc.lineWidth(gridLineWidth).moveTo(currentX, currentY).lineTo(currentX, currentY + rowHeight).stroke(gridColor);
       }
-      doc.text(cell !== null && cell !== undefined ? String(cell) : '-', currentX + 2, currentY + 4, {
-        width: colWidths[i] - 4,
-        align: i === 1 ? 'left' : 'center'
+      doc.text(cell !== null && cell !== undefined ? String(cell) : '-', currentX + 3, currentY + 2.5, {
+        width: colWidths[i] - 5,
+        align: 'left'
       });
       currentX += colWidths[i];
     });
@@ -227,34 +257,100 @@ const drawTable = (doc, startY, headers, rows, colWidths, startX = 40) => {
   return currentY;
 };
 
-// En-tete bilingue UY1 commun aux deux documents
-const drawHeader = (doc, pageWidth, y = 40) => {
-  doc.fontSize(10).font('Helvetica-Bold');
-  doc.text('REPUBLIQUE DU CAMEROUN', 40, y);
-  doc.fontSize(8).font('Helvetica');
-  doc.text('Paix - Travail - Patrie', 60, y + 15);
-  doc.fontSize(10).font('Helvetica-Bold');
-  doc.text('UNIVERSITE DE YAOUNDE I', 45, y + 35);
-  doc.fontSize(9).font('Helvetica');
-  doc.text('FACULTE DES SCIENCES', 50, y + 50);
+// Titre de section centré, encadré de lignes de dièses (style "STATISTIQUES DE VALIDATION")
+// Retourne le Y juste après le bloc, pour enchaîner la suite du document.
+const drawHashTitle = (doc, pageWidth, startY, title, startX = 30) => {
+  const usableWidth = pageWidth - startX * 2;
+  doc.fontSize(8).font('Helvetica-Bold').fillColor('#0f172a');
 
-  doc.fontSize(10).font('Helvetica-Bold');
-  doc.text('REPUBLIC OF CAMEROON', pageWidth - 190, y);
-  doc.fontSize(8).font('Helvetica');
-  doc.text('Peace - Work - Fatherland', pageWidth - 175, y + 15);
-  doc.fontSize(10).font('Helvetica-Bold');
-  doc.text('UNIVERSITY OF YAOUNDE I', pageWidth - 195, y + 35);
-  doc.fontSize(9).font('Helvetica');
-  doc.text('FACULTY OF SCIENCE', pageWidth - 175, y + 50);
+  const upperTitle = title.toUpperCase();
+  const hashLineWidth = doc.widthOfString('#');
+  const titleWidth = doc.widthOfString(upperTitle);
+  // Ligne de dièses limitée à la largeur du titre (+ petite marge), pas toute la page
+  const hashCount = Math.max(10, Math.round((titleWidth + 20) / hashLineWidth));
+  const hashLine = '#'.repeat(hashCount);
+
+  let y = startY;
+  doc.text(hashLine, startX, y, { width: usableWidth, align: 'center' });
+  y += doc.heightOfString(hashLine, { width: usableWidth }) + 2;
+
+  doc.text(upperTitle, startX, y, { width: usableWidth, align: 'center' });
+  y += doc.heightOfString(upperTitle, { width: usableWidth }) + 2;
+
+  doc.text(hashLine, startX, y, { width: usableWidth, align: 'center' });
+  y += doc.heightOfString(hashLine, { width: usableWidth }) + 6;
+
+  return y;
+};
+
+// En-tete bilingue UY1 commun aux deux documents
+const drawHeader = (doc, pageWidth, y = 20) => {
+  doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#000000');
+  doc.text('REPUBLIQUE DU CAMEROUN', 30, y);
+  doc.fontSize(6.5).font('Helvetica').fillColor('#444444');
+  doc.text('Paix - Travail - Patrie', 45, y + 10);
+  doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#000000');
+  doc.text('UNIVERSITE DE YAOUNDE I', 35, y + 22);
+  doc.fontSize(7.5).font('Helvetica').fillColor('#444444');
+  doc.text('FACULTE DES SCIENCES', 40, y + 33);
+
+  doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#000000');
+  doc.text('REPUBLIC OF CAMEROON', pageWidth - 165, y);
+  doc.fontSize(6.5).font('Helvetica').fillColor('#444444');
+  doc.text('Peace - Work - Fatherland', pageWidth - 150, y + 10);
+  doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#000000');
+  doc.text('UNIVERSITY OF YAOUNDE I', pageWidth - 160, y + 22);
+  doc.fontSize(7.5).font('Helvetica').fillColor('#444444');
+  doc.text('FACULTY OF SCIENCE', pageWidth - 145, y + 33);
 
   try {
     const logoPath = getLogoPath();
     if (logoPath) {
-      doc.image(logoPath, pageWidth / 2 - 25, y, { width: 50, height: 60 });
+      doc.image(logoPath, pageWidth / 2 - 18, y, { width: 36, height: 44 });
     }
   } catch (err) {
-    console.error("Erreur lors de l'insertion du logo:", err.message);
+    console.error("Erreur logo:", err.message);
   }
+};
+
+// Helpers spécifiques au PV d'UE
+const buildNiveauCode = (classe) => {
+  const codFiliere = (classe.CODFILIERE || classe.FILIERE_NOM || 'UE').toUpperCase().replace(/\s+/g, '');
+  const grade = (classe.CODGRADE || 'L').toUpperCase().trim();
+  let niveau = (classe.NIVEAU || '1').toString().trim().toUpperCase();
+  if (niveau.startsWith(grade)) {
+    return `${codFiliere}-${niveau}`;
+  }
+  return `${codFiliere}-${grade}${niveau}`;
+};
+
+const getDecisionUePV = (score100) => {
+  if (score100 === null || score100 === undefined || Number.isNaN(Number(score100))) {
+    return 'EL';
+  }
+  const s = Number(score100);
+  if (s >= 50) return 'CA';
+  if (s >= 35) return 'CANT';
+  return 'NC';
+};
+
+const getMentionUePV = (score100) => {
+  if (score100 === null || score100 === undefined || Number.isNaN(Number(score100))) {
+    return '-';
+  }
+  const s = Number(score100);
+  if (s >= 80) return 'A';
+  if (s >= 75) return 'A-';
+  if (s >= 70) return 'B+';
+  if (s >= 65) return 'B';
+  if (s >= 60) return 'B-';
+  if (s >= 55) return 'C+';
+  if (s >= 50) return 'C';
+  if (s >= 45) return 'C-';
+  if (s >= 40) return 'D+';
+  if (s >= 35) return 'D';
+  if (s >= 30) return 'E';
+  return 'F';
 };
 
 // ============================================================================
@@ -291,9 +387,6 @@ exports.generatePvUe = async (req, res) => {
     const semBase = (semInput === 1 || semInput === 3) ? 1 : 2;
     const semRattrapage = (semInput === 1 || semInput === 3) ? 3 : 4;
 
-    // Roster de la classe pour l'annee + moyenne sur cette UE/semestre.
-    // On fusionne la note de la session normale (m1) et celle de la session de rattrapage (m2)
-    // si elle existe, afin d'afficher la note finale mise a jour.
     const rows = await query(
       `SELECT e.MATRICULE, e.NOM,
               COALESCE(m2.MOYENNE, m1.MOYENNE) AS MOYENNE,
@@ -314,10 +407,6 @@ exports.generatePvUe = async (req, res) => {
       [idue, annee, semBase, idue, annee, semRattrapage, idclasse, annee]
     );
 
-    // Types d'evaluation de TOUS les EC de l'UE (EC-miroir compris) + notes
-    // brutes correspondantes. Peu importe qu'il y ait 1 EC (ancien systeme /
-    // EC-miroir) ou plusieurs (nouveau systeme) : on lit toujours par IDEC,
-    // puis on agrege CC/TP/SN en 3 colonnes uniques au niveau de l'UE.
     const [evaluationRows, ecNoteRows] = await Promise.all([
       query(`SELECT e.IDEC, e.INTITULE, t.type, t.echelle
              FROM ec e JOIN ec_evaluation_types t ON t.IDEC = e.IDEC
@@ -328,8 +417,24 @@ exports.generatePvUe = async (req, res) => {
     ]);
 
     const ecIdsOfUE = [...new Set(evaluationRows.map((r) => Number(r.IDEC)))];
-    const evalColumns = buildEvalSummaryColumns(evaluationRows);
     const composanteCaption = buildComposanteCaption(evaluationRows);
+
+    let echelleCC = 0;
+    let echelleSN = 0;
+    let echelleTP = 0;
+    let hasTP = false;
+
+    evaluationRows.forEach((row) => {
+      if (row.type === 'CC') echelleCC += Number(row.echelle || 0);
+      if (row.type === 'SN') echelleSN += Number(row.echelle || 0);
+      if (row.type === 'TP') {
+        echelleTP += Number(row.echelle || 0);
+        hasTP = true;
+      }
+    });
+
+    if (echelleCC === 0) echelleCC = 30;
+    if (echelleSN === 0) echelleSN = 70;
 
     const notesByStudent = new Map();
     ecNoteRows.forEach((note) => {
@@ -337,74 +442,116 @@ exports.generatePvUe = async (req, res) => {
       notesByStudent.get(note.MATRICULE)[Number(note.IDEC)] = note;
     });
 
-    const doc = new PDFDocument({ margin: 40, size: 'A4', layout: 'landscape' });
+        const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="PV_UE_${idue}_${Date.now()}.pdf"`);
     doc.pipe(res);
 
     const pageWidth = doc.page.width;
-    drawHeader(doc, pageWidth);
+    drawHeader(doc, pageWidth, 18);
 
-    doc.fontSize(14).font('Helvetica-Bold');
-    doc.text("PROCES VERBAL DE L'UNITE D'ENSEIGNEMENT", 0, 130, { align: 'center' });
+    doc.fontSize(11).font('Helvetica-Bold').fillColor('#0f172a');
+    doc.text("PROCES VERBAL DE L'UNITE D'ENSEIGNEMENT", 0, 70, { align: 'center' });
 
     const ueTitle = `${ue.CODUE || ''} - ${ue.INTITULE || ''}`.toUpperCase();
-    doc.fontSize(12).font('Helvetica');
-    doc.text(ueTitle, 0, 150, { align: 'center' });
+    doc.fontSize(9.5).font('Helvetica-Bold').fillColor('#1e293b');
+    doc.text(ueTitle, 0, 84, { align: 'center' });
 
-    doc.fontSize(10).font('Helvetica');
-    doc.text(`Filiere : ${classe.FILIERE_NOM || '-'}   |   Specialite : ${classe.SPECIALITE_INTITULE || '-'}`, 0, 170, { align: 'center' });
-    doc.text(`Grade : ${classe.GRADE_INTITULE || classe.CODGRADE || '-'}   |   Niveau : ${classe.NIVEAU || '-'}   |   Annee : ${annee}   |   Semestre : ${idsemestre}`, 0, 185, { align: 'center' });
+    doc.fontSize(8).font('Helvetica').fillColor('#334155');
+    doc.text(`Filiere : ${classe.FILIERE_NOM || '-'}   |   Specialite : ${classe.SPECIALITE_INTITULE || '-'}   |   Grade : ${classe.GRADE_INTITULE || classe.CODGRADE || '-'}   |   Niveau : ${classe.NIVEAU || '-'}   |   Annee : ${annee}   |   Semestre : ${idsemestre}`, 0, 98, { align: 'center' });
 
     if (composanteCaption) {
-      doc.fontSize(7).font('Helvetica').text(`Composantes de l'UE : ${composanteCaption}`, 40, 198, { width: pageWidth - 80, align: 'center' });
+      doc.fontSize(6.5).font('Helvetica-Oblique').fillColor('#64748b').text(`Composantes de l'UE : ${composanteCaption}`, 30, 110, { width: pageWidth - 60, align: 'center' });
     }
 
-    const tableTop = composanteCaption ? 212 : 210;
-    const headers = ['N', 'Matricule', 'Nom & Prenom', ...evalColumns.map((c) => c.label), 'Moyenne\n/100', 'Credit', 'QdP', 'Mention', 'Decision'];
-    const colWidths = [24, 65, 135, ...evalColumns.map(() => 55), 55, 40, 40, 50, 60];
+    const tableTop = composanteCaption ? 122 : 114;
+    const headers = [
+      'Num',
+      'Matricule',
+      'Nom et prenom',
+      'Niveau',
+      'ANO_CC',
+      `CC/${echelleCC}`,
+      'ANO_EE',
+      `EE/${echelleSN}`
+    ];
+
+    // Largeurs calculées pour occuper exactement les 781.89 pt de largeur utile (30pt marge gauche et droite)
+    let colWidths = [];
+    if (hasTP) {
+      headers.push(`EP/${echelleTP || 20}`);
+      headers.push('TOTAL/100', 'DEC', 'MENTION');
+      // Total: 26 + 72 + 195 + 66 + 48 + 52 + 48 + 52 + 52 + 60 + 55 + 55 = 781 pt
+      colWidths = [26, 72, 195, 66, 48, 52, 48, 52, 52, 60, 55, 55];
+    } else {
+      headers.push('TOTAL/100', 'DEC', 'MENTION');
+      // Total: 26 + 75 + 230 + 70 + 52 + 56 + 52 + 56 + 60 + 52 + 52 = 781 pt
+      colWidths = [26, 75, 230, 70, 52, 56, 52, 56, 60, 52, 52];
+    }
 
     const tableRows = [];
-    const decisionCounts = {};
+    const decisionCounts = { CA: 0, CANT: 0, NC: 0, EL: 0 };
+    const niveauCode = buildNiveauCode(classe);
 
     rows.forEach((r, i) => {
-      const decision = r.Decision || (r.MOYENNE !== null ? getGradeLocal(Number(r.MOYENNE)) : '-');
-      decisionCounts[decision] = (decisionCounts[decision] || 0) + 1;
+      const totalScore = r.MOYENNE !== null && r.MOYENNE !== undefined ? Number(r.MOYENNE) : null;
+      const dec = getDecisionUePV(totalScore);
+      const mention = getMentionUePV(totalScore);
+      decisionCounts[dec] = (decisionCounts[dec] || 0) + 1;
+
       const studentNotes = notesByStudent.get(r.MATRICULE) || {};
       const { sums, hasValue } = sumStudentEvalByType(ecIdsOfUE, studentNotes);
 
-      tableRows.push([
+      const rowData = [
         (i + 1).toString(),
         r.MATRICULE,
         r.NOM,
-        ...evalColumns.map((col) => (hasValue[col.type] ? sums[col.type].toFixed(2) : '-')),
-        r.MOYENNE !== null ? Number(r.MOYENNE).toFixed(2) : '-',
-        r.CREDIT !== null ? r.CREDIT : '-',
-        r.QdP !== null ? Number(r.QdP).toFixed(2) : (r.MOYENNE !== null ? getQdpLocal(Number(r.MOYENNE)).toFixed(2) : '-'),
-        r.CODMENTION || (r.MOYENNE !== null ? getMentionLocal(Number(r.MOYENNE)) : '-'),
-        decision
-      ]);
+        niveauCode,
+        '-',
+        hasValue.CC ? sums.CC.toFixed(2) : '-',
+        '-',
+        hasValue.SN ? sums.SN.toFixed(2) : '-'
+      ];
+
+      if (hasTP) {
+        rowData.push(hasValue.TP ? sums.TP.toFixed(2) : '-');
+      }
+
+      rowData.push(
+        totalScore !== null ? totalScore.toFixed(2) : '-',
+        dec,
+        mention
+      );
+
+      tableRows.push(rowData);
     });
 
-    let finalY = drawTable(doc, tableTop, headers, tableRows, colWidths, 40);
+    const startX = 30;
+    let finalY = drawTable(doc, tableTop, headers, tableRows, colWidths, startX);
 
-    // Statistiques : comptage dynamique par valeur de Decision reellement
-    // rencontree (CA/CANT/NC/...), pas une liste de grades codee en dur.
-    finalY += 30;
-    doc.fontSize(10).font('Helvetica-Bold').fillColor('#000');
-    doc.text("Statistiques de l'Unite d'Enseignement", 40, finalY);
+    finalY += 12;
+    if (finalY + 60 > doc.page.height - 25) {
+      doc.addPage();
+      finalY = 25;
+    }
+
+    finalY = drawHashTitle(doc, pageWidth, finalY, 'Statistiques de Validation', startX);
 
     const totalEtudiants = rows.length;
-    const statLabels = Object.keys(decisionCounts);
-    const statHeaders = ['Effectif', ...statLabels.map(l => l), ...statLabels.map(l => `%${l}`)];
-    const statColWidths = [60, ...statLabels.map(() => 45), ...statLabels.map(() => 45)];
+    const statLabels = ['CA', 'CANT', 'NC', 'EL'];
+    const statHeaders = ['Effectif Total', ...statLabels, ...statLabels.map((l) => `%${l}`)];
+    const statColWidths = [70, ...statLabels.map(() => 45), ...statLabels.map(() => 45)];
     const statRow = [
       totalEtudiants.toString(),
-      ...statLabels.map(l => decisionCounts[l].toString()),
-      ...statLabels.map(l => totalEtudiants ? ((decisionCounts[l] / totalEtudiants) * 100).toFixed(2) : '0.00')
+      ...statLabels.map((l) => (decisionCounts[l] || 0).toString()),
+      ...statLabels.map((l) => totalEtudiants ? (((decisionCounts[l] || 0) / totalEtudiants) * 100).toFixed(2) + '%' : '0.00%')
     ];
 
-    drawTable(doc, finalY + 15, statHeaders, [statRow], statColWidths, 40);
+    finalY = drawTable(doc, finalY + 6, statHeaders, [statRow], statColWidths, startX);
+
+    finalY += 8;
+    doc.fontSize(6.5).font('Helvetica-Oblique').fillColor('#64748b');
+    doc.text("Decisions : CA (Credit Acquis, >=50)   |   CANT (Credit Acquis Non Compensable, 35-49)   |   NC (Non Compensable, 0-34)   |   EL (Elimine / Non Evalue)", startX, finalY);
 
     doc.end();
   } catch (err) {
@@ -417,11 +564,6 @@ exports.generatePvUe = async (req, res) => {
 
 // ============================================================================
 // PV DE RATTRAPAGE PAR UE
-// POST /api/pv/generate-ue-rattrapage
-// Body: { idue, annee, idsemestre, idclasse }
-// idsemestre = semestre de BASE de l'UE (1 ou 2).
-// Semestre de rattrapage derive automatiquement : S1 -> S3, S2 -> S4.
-// Seuls les etudiants ayant une note de rattrapage (INNER JOIN) apparaissent.
 // ============================================================================
 exports.generatePvUeRattrapage = async (req, res) => {
   const { idue, annee, idsemestre, idclasse } = req.body;
@@ -456,32 +598,117 @@ exports.generatePvUeRattrapage = async (req, res) => {
     if (!classeRows.length) throw new Error('Classe introuvable');
     const classe = classeRows[0];
 
-    // INNER JOIN : seuls les etudiants ayant une note de rattrapage apparaissent
     const rows = await query(
       `SELECT e.MATRICULE, e.NOM,
-              m.MOYENNE, m.CODMENTION, m.CREDIT, m.QdP, m.Decision
+              m2.MOYENNE, m2.CODMENTION, m2.CREDIT, m2.QdP, m2.Decision
        FROM Inscript i
        JOIN Etudiant e ON e.MATRICULE = i.MATRICULE
-       INNER JOIN Moyennes m
-              ON m.MATRICULE = i.MATRICULE
-             AND m.IDUE = ? AND m.ANNEE = ? AND m.IDSEMESTRE = ?
+       JOIN Moyennes m2
+         ON m2.MATRICULE = i.MATRICULE
+        AND m2.IDUE = ? AND m2.ANNEE = ? AND m2.IDSEMESTRE = ?
        WHERE i.IDCLASSE = ? AND i.ANNEE = ?
        ORDER BY e.NOM`,
       [idue, annee, semRattrapage, idclasse, annee]
     );
+// DEBUT DEBUG
 
-    const [evaluationRows, ecNoteRows] = await Promise.all([
-      query(`SELECT e.IDEC, e.INTITULE, t.type, t.echelle
-             FROM ec e JOIN ec_evaluation_types t ON t.IDEC = e.IDEC
-             WHERE e.IDUE = ? ORDER BY e.IDEC, FIELD(t.type,'CC','TP','SN')`, [idue]),
-      query(`SELECT n.MATRICULE, n.IDEC, n.note_cc, n.note_tp, n.note_sn
-             FROM notes n JOIN ec e ON e.IDEC = n.IDEC
-             WHERE e.IDUE = ? AND n.IDCLASSE = ? AND n.ANNEE = ?`, [idue, idclasse, annee]),
-    ]);
+console.log('🚀 DEBUG: avant Promise.all');
+console.log('idue =', idue);
+console.log('idclasse =', idclasse);
+console.log('annee =', annee);
 
-    const ecIdsOfUE = [...new Set(evaluationRows.map((r) => Number(r.IDEC)))];
-    const evalColumns = buildEvalSummaryColumns(evaluationRows);
-    const composanteCaption = buildComposanteCaption(evaluationRows);
+let evaluationRows;
+let ecNoteRows;
+
+try {
+  console.log('🔎 DEBUG: lancement requête evaluationRows...');
+
+  evaluationRows = await query(
+    `SELECT e.IDEC, e.INTITULE, t.type, t.echelle
+     FROM ec e
+     JOIN ec_evaluation_types t ON t.IDEC = e.IDEC
+     WHERE e.IDUE = ?
+     ORDER BY e.IDEC, FIELD(t.type,'CC','TP','SN')`,
+    [idue]
+  );
+
+  console.log('✅ evaluationRows récupérées:', evaluationRows);
+  console.log('📊 nombre evaluationRows:', evaluationRows.length);
+
+  console.log('🔎 DEBUG: lancement requête ecNoteRows...');
+
+  ecNoteRows = await query(
+    `SELECT n.MATRICULE, n.IDEC, n.note_cc, n.note_tp, n.note_sn
+     FROM notes n
+     JOIN ec e ON e.IDEC = n.IDEC
+     WHERE e.IDUE = ? AND n.IDCLASSE = ? AND n.ANNEE = ?`,
+    [idue, idclasse, annee]
+  );
+
+  console.log('✅ ecNoteRows récupérées:', ecNoteRows);
+  console.log('📊 nombre ecNoteRows:', ecNoteRows.length);
+
+} catch (error) {
+  console.error('❌ ERREUR pendant les requêtes SQL:', error);
+  console.error('❌ message:', error.message);
+  console.error('❌ stack:', error.stack);
+
+  throw error;
+}
+
+console.log('➡️ DEBUG: après les deux requêtes');
+
+const ecIdsOfUE = [...new Set(
+  evaluationRows.map((r) => Number(r.IDEC))
+)];
+
+console.log('📌 ecIdsOfUE =', ecIdsOfUE);
+
+const composanteCaption = buildComposanteCaption(evaluationRows);
+
+console.log('📌 composanteCaption =', composanteCaption);
+
+let echelleCC = 0;
+let echelleSN = 0;
+let echelleTP = 0;
+let hasTP = false;
+
+console.log('📌 AVANT calcul des échelles');
+console.log('echelle CC =', echelleCC);
+console.log('echelle SN =', echelleSN);
+console.log('echelle TP =', echelleTP);
+
+evaluationRows.forEach((row) => {
+  console.log('🔍 row =', row);
+
+  if (row.type === 'CC') {
+    echelleCC += Number(row.echelle || 0);
+    console.log('➡️ CC:', row.echelle, '=> total =', echelleCC);
+  }
+
+  if (row.type === 'SN') {
+    echelleSN += Number(row.echelle || 0);
+    console.log('➡️ SN:', row.echelle, '=> total =', echelleSN);
+  }
+
+  if (row.type === 'TP') {
+    echelleTP += Number(row.echelle || 0);
+    hasTP = true;
+    console.log('➡️ TP:', row.echelle, '=> total =', echelleTP);
+  }
+});
+
+console.log('✅ APRÈS calcul des échelles');
+console.log('echelle CC =', echelleCC);
+console.log('echelle SN =', echelleSN);
+console.log('echelle TP =', echelleTP);
+console.log('hasTP =', hasTP);
+
+
+    // FIN DEBUG
+
+    if (echelleCC === 0) echelleCC = 30;
+    if (echelleSN === 0) echelleSN = 70;
 
     const notesByStudent = new Map();
     ecNoteRows.forEach((note) => {
@@ -489,81 +716,122 @@ exports.generatePvUeRattrapage = async (req, res) => {
       notesByStudent.get(note.MATRICULE)[Number(note.IDEC)] = note;
     });
 
-    const doc = new PDFDocument({ margin: 40, size: 'A4', layout: 'landscape' });
+        const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="PV_RATTRAPAGE_UE_${idue}_${Date.now()}.pdf"`);
+    res.setHeader('Content-Disposition', `attachment; filename="PV_Rattrapage_UE_${idue}_${Date.now()}.pdf"`);
     doc.pipe(res);
 
     const pageWidth = doc.page.width;
-    drawHeader(doc, pageWidth);
+    drawHeader(doc, pageWidth, 18);
 
-    doc.fontSize(14).font('Helvetica-Bold');
-    doc.text("PROCES VERBAL DE RATTRAPAGE - UNITE D'ENSEIGNEMENT", 0, 130, { align: 'center' });
+    doc.fontSize(11).font('Helvetica-Bold').fillColor('#0f172a');
+    doc.text("PROCES VERBAL DE RATTRAPAGE - UNITE D'ENSEIGNEMENT", 0, 70, { align: 'center' });
 
-    doc.fontSize(12).font('Helvetica');
-    doc.text(`${ue.CODUE || ''} - ${ue.INTITULE || ''}`.toUpperCase(), 0, 150, { align: 'center' });
+    const ueTitle = `${ue.CODUE || ''} - ${ue.INTITULE || ''}`.toUpperCase();
+    doc.fontSize(9.5).font('Helvetica-Bold').fillColor('#1e293b');
+    doc.text(ueTitle, 0, 84, { align: 'center' });
 
-    doc.fontSize(10).font('Helvetica');
-    doc.text(`Filiere : ${classe.FILIERE_NOM || '-'}   |   Specialite : ${classe.SPECIALITE_INTITULE || '-'}`, 0, 170, { align: 'center' });
-    doc.text(
-      `Grade : ${classe.GRADE_INTITULE || classe.CODGRADE || '-'}   |   Niveau : ${classe.NIVEAU || '-'}   |   Annee : ${annee}   |   Session : Rattrapage S${semBase} (Semestre ${semRattrapage})`,
-      0, 185, { align: 'center' }
-    );
+    doc.fontSize(8).font('Helvetica').fillColor('#334155');
+    doc.text(`Filiere : ${classe.FILIERE_NOM || '-'}   |   Specialite : ${classe.SPECIALITE_INTITULE || '-'}   |   Grade : ${classe.GRADE_INTITULE || classe.CODGRADE || '-'}   |   Niveau : ${classe.NIVEAU || '-'}   |   Annee : ${annee}   |   Session : Rattrapage S${semBase} (Semestre ${semRattrapage})`, 0, 98, { align: 'center' });
 
     if (composanteCaption) {
-      doc.fontSize(7).font('Helvetica').text(`Composantes de l'UE : ${composanteCaption}`, 40, 198, { width: pageWidth - 80, align: 'center' });
+      doc.fontSize(6.5).font('Helvetica-Oblique').fillColor('#64748b').text(`Composantes de l'UE : ${composanteCaption}`, 30, 110, { width: pageWidth - 60, align: 'center' });
     }
 
-    const tableTop = composanteCaption ? 212 : 210;
-    const headers = ['N', 'Matricule', 'Nom & Prenom', ...evalColumns.map((c) => c.label), 'Moyenne\n/100', 'Credit', 'QdP', 'Mention', 'Decision'];
-    const colWidths = [24, 65, 135, ...evalColumns.map(() => 55), 55, 40, 40, 50, 60];
+    const tableTop = composanteCaption ? 122 : 114;
+    const headers = [
+      'Num',
+      'Matricule',
+      'Nom et prenom',
+      'Niveau',
+      'ANO_CC',
+      `CC/${echelleCC}`,
+      'ANO_EE',
+      `EE/${echelleSN}`
+    ];
+
+    let colWidths = [];
+    if (hasTP) {
+      headers.push(`EP/${echelleTP || 20}`);
+      headers.push('TOTAL/100', 'DEC', 'MENTION');
+      colWidths = [26, 72, 195, 66, 48, 52, 48, 52, 52, 60, 55, 55];
+    } else {
+      headers.push('TOTAL/100', 'DEC', 'MENTION');
+      colWidths = [26, 75, 230, 70, 52, 56, 52, 56, 60, 52, 52];
+    }
+
+    const startX = 30;
 
     if (!rows.length) {
-      doc.fontSize(11).font('Helvetica').fillColor('#555');
+      doc.fontSize(10).font('Helvetica').fillColor('#555');
       doc.text(
         'Aucun etudiant ne figure en session de rattrapage pour cette UE.',
-        40, tableTop,
-        { align: 'center', width: pageWidth - 80 }
+        30, tableTop + 20,
+        { align: 'center', width: pageWidth - 60 }
       );
     } else {
       const tableRows = [];
-      const decisionCounts = {};
+      const decisionCounts = { CA: 0, CANT: 0, NC: 0, EL: 0 };
+      const niveauCode = buildNiveauCode(classe);
 
       rows.forEach((r, i) => {
-        const decision = r.Decision || (r.MOYENNE !== null ? getGradeLocal(Number(r.MOYENNE)) : '-');
-        decisionCounts[decision] = (decisionCounts[decision] || 0) + 1;
+        const totalScore = r.MOYENNE !== null && r.MOYENNE !== undefined ? Number(r.MOYENNE) : null;
+        const dec = getDecisionUePV(totalScore);
+        const mention = getMentionUePV(totalScore);
+        decisionCounts[dec] = (decisionCounts[dec] || 0) + 1;
+
         const studentNotes = notesByStudent.get(r.MATRICULE) || {};
         const { sums, hasValue } = sumStudentEvalByType(ecIdsOfUE, studentNotes);
 
-        tableRows.push([
+        const rowData = [
           (i + 1).toString(),
           r.MATRICULE,
           r.NOM,
-          ...evalColumns.map((col) => (hasValue[col.type] ? sums[col.type].toFixed(2) : '-')),
-          r.MOYENNE !== null ? Number(r.MOYENNE).toFixed(2) : '-',
-          r.CREDIT !== null ? r.CREDIT : '-',
-          r.QdP !== null ? Number(r.QdP).toFixed(2) : (r.MOYENNE !== null ? getQdpLocal(Number(r.MOYENNE)).toFixed(2) : '-'),
-          r.CODMENTION || (r.MOYENNE !== null ? getMentionLocal(Number(r.MOYENNE)) : '-'),
-          decision,
-        ]);
+          niveauCode,
+          '-',
+          hasValue.CC ? sums.CC.toFixed(2) : '-',
+          '-',
+          hasValue.SN ? sums.SN.toFixed(2) : '-'
+        ];
+
+        if (hasTP) {
+          rowData.push(hasValue.TP ? sums.TP.toFixed(2) : '-');
+        }
+
+        rowData.push(
+          totalScore !== null ? totalScore.toFixed(2) : '-',
+          dec,
+          mention
+        );
+
+        tableRows.push(rowData);
       });
 
-      let finalY = drawTable(doc, tableTop, headers, tableRows, colWidths, 40);
+      let finalY = drawTable(doc, tableTop, headers, tableRows, colWidths, startX);
 
-      finalY += 30;
-      doc.fontSize(10).font('Helvetica-Bold').fillColor('#000');
-      doc.text('Statistiques - Session de Rattrapage', 40, finalY);
+      finalY += 12;
+      if (finalY + 60 > doc.page.height - 25) {
+        doc.addPage();
+        finalY = 25;
+      }
+
+      finalY = drawHashTitle(doc, pageWidth, finalY, 'Statistiques de Validation - Rattrapage', startX);
 
       const totalRattrapage = rows.length;
-      const statLabelsR = Object.keys(decisionCounts);
-      const statHeadersR = ['Effectif', ...statLabelsR, ...statLabelsR.map((l) => `%${l}`)];
-      const statColWidthsR = [60, ...statLabelsR.map(() => 45), ...statLabelsR.map(() => 45)];
-      const statRowR = [
+      const statLabels = ['CA', 'CANT', 'NC', 'EL'];
+      const statHeaders = ['Effectif Total', ...statLabels, ...statLabels.map((l) => `%${l}`)];
+      const statColWidths = [70, ...statLabels.map(() => 45), ...statLabels.map(() => 45)];
+      const statRow = [
         totalRattrapage.toString(),
-        ...statLabelsR.map((l) => decisionCounts[l].toString()),
-        ...statLabelsR.map((l) => totalRattrapage ? ((decisionCounts[l] / totalRattrapage) * 100).toFixed(2) : '0.00'),
+        ...statLabels.map((l) => (decisionCounts[l] || 0).toString()),
+        ...statLabels.map((l) => totalRattrapage ? (((decisionCounts[l] || 0) / totalRattrapage) * 100).toFixed(2) + '%' : '0.00%')
       ];
-      drawTable(doc, finalY + 15, statHeadersR, [statRowR], statColWidthsR, 40);
+
+      finalY = drawTable(doc, finalY + 6, statHeaders, [statRow], statColWidths, startX);
+
+      finalY += 8;
+      doc.fontSize(6.5).font('Helvetica-Oblique').fillColor('#64748b');
+      doc.text("Decisions : CA (Credit Acquis, >=50)   |   CANT (Credit Acquis Non Compensable, 35-49)   |   NC (Non Compensable, 0-34)   |   EL (Elimine / Non Evalue)", startX, finalY);
     }
 
     doc.end();
@@ -577,18 +845,6 @@ exports.generatePvUeRattrapage = async (req, res) => {
 
 // ============================================================================
 // PV RECAPITULATIF DE CYCLE
-// POST /api/pv/generate-recap
-// Body: { matricule, grade }   grade = CODGRADE, ex: 'L' ou 'M'
-//
-// Source de verite : ulmdpvrecap. La colonne DECISION est deja calculee en
-// amont par le jury/le processus de deliberation -- ce controleur ne la
-// recalcule jamais, il applique seulement la regle d'agregation de la
-// section 10 du schema : un niveau est admis si TOUTES ses lignes
-// (= tous les semestres presents pour ce niveau) portent DECISION = ADMIS ;
-// le cycle est admis si TOUS ses niveaux le sont.
-//
-// NB : ulmdpvrecap est une table de reporting a plat (deja pivotee), non
-// impactee par la migration EC-miroir -- aucun changement necessaire ici.
 // ============================================================================
 exports.generateRecap = async (req, res) => {
   try {

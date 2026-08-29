@@ -105,10 +105,10 @@ router.delete('/:id', async (req, res, next) => {
 
 router.get('/:id/components', async (req, res, next) => {
   try {
-    const components = await query(`SELECT e.IDEC,e.INTITULE,e.credits_ec,e.est_actif,
+    const components = await query(`SELECT e.IDEC,e.INTITULE,e.poids,e.est_actif,
       JSON_ARRAYAGG(JSON_OBJECT('type',t.type,'echelle',t.echelle)) AS evaluations
       FROM ec e LEFT JOIN ec_evaluation_types t ON t.IDEC=e.IDEC WHERE e.IDUE=?
-      GROUP BY e.IDEC,e.INTITULE,e.credits_ec,e.est_actif ORDER BY e.IDEC`, [req.params.id]);
+      GROUP BY e.IDEC,e.INTITULE,e.poids,e.est_actif ORDER BY e.IDEC`, [req.params.id]);
     res.json(components);
   } catch (error) { next(error); }
 });
