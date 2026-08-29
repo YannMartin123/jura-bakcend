@@ -1,12 +1,40 @@
 const express = require('express');
-const { query } = require('../config/mysql');
+const router = express.Router();
+const deliberationController = require('../controllers/deliberation.controller');
 const { authenticateToken } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/permissions');
+const { query } = require('../config/mysql');
 const { audit } = require('../services/audit.service');
-const router = express.Router();
-router.use(authenticateToken, requirePermission('deliberation.manage'));
 
-router.post('/', async (req, res, next) => {
+router.use(authenticateToken);
+
+// ----------------------------------------------------------------------
+// Routes Sessions de Délibération
+// ----------------------------------------------------------------------
+router.get('/', requirePermission('deliberation.view'), deliberationController.listSessions);
+router.get('/:id', requirePermission('deliberation.view'), deliberationController.getSession);
+router.get('/:id/roster-grades', requirePermission('deliberation.view'), deliberationController.getRosterAndGrades);
+
+router.post('/', requirePermission('deliberation.manage'), deliberationController.createSession);
+router.put('/:id', requirePermission('deliberation.manage'), deliberationController.updateSession);
+router.delete('/:id', requirePermission('deliberation.manage'), deliberationController.deleteSession);
+
+// Cycle de vie
+router.post('/:id/ouvrir', requirePermission('deliberation.manage'), deliberationController.ouvrirSession);
+router.post('/:id/commencer', requirePermission('deliberation.execute'), deliberationController.commencerSession);
+router.post('/:id/demander-validation', requirePermission('deliberation.manage'), deliberationController.demanderValidation);
+router.post('/:id/valider', requirePermission('deliberation.execute'), deliberationController.validerSession);
+router.post('/:id/cloturer', requirePermission('deliberation.manage'), deliberationController.cloturerSession);
+router.post('/:id/annuler', requirePermission('deliberation.manage'), deliberationController.annulerSession);
+
+// Verrouillage (Super Admin)
+router.post('/:id/verrouiller', requirePermission('deliberation.lock'), deliberationController.verrouillerSession);
+router.post('/:id/deverrouiller', requirePermission('deliberation.lock'), deliberationController.deverrouillerSession);
+
+// ----------------------------------------------------------------------
+// Compatibilité avec les anciennes routes de délibération (/api/deliberations)
+// ----------------------------------------------------------------------
+router.post('/legacy/create', requirePermission('deliberation.manage'), async (req, res, next) => {
   try {
     const { classe_id, annee, cycle, motif } = req.body;
     if (!classe_id || !annee || !cycle) return res.status(400).json({ message: 'classe_id, annee et cycle requis.' });
@@ -17,7 +45,7 @@ router.post('/', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-router.put('/:id/decisions', async (req, res, next) => {
+router.put('/:id/decisions', requirePermission('deliberation.manage'), async (req, res, next) => {
   try {
     const { decisions } = req.body;
     if (!Array.isArray(decisions) || !decisions.length) return res.status(400).json({ message:'decisions requis.' });
@@ -34,7 +62,7 @@ router.put('/:id/decisions', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-router.post('/:id/publish', async (req, res, next) => {
+router.post('/:id/publish', requirePermission('deliberation.manage'), async (req, res, next) => {
   try {
     const item = (await query('SELECT * FROM deliberations WHERE id=?', [req.params.id]))[0];
     if (!item) return res.status(404).json({ message:'Délibération introuvable.' });
@@ -45,4 +73,5 @@ router.post('/:id/publish', async (req, res, next) => {
     res.json(updated);
   } catch (error) { next(error); }
 });
+
 module.exports = router;

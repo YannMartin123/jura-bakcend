@@ -105,10 +105,10 @@ router.delete('/:id', async (req, res, next) => {
 
 router.get('/:id/components', async (req, res, next) => {
   try {
-    const components = await query(`SELECT e.IDEC,e.INTITULE,e.CREDIT,e.est_actif,
+    const components = await query(`SELECT e.IDEC,e.INTITULE,e.credits_ec,e.est_actif,
       JSON_ARRAYAGG(JSON_OBJECT('type',t.type,'echelle',t.echelle)) AS evaluations
       FROM ec e LEFT JOIN ec_evaluation_types t ON t.IDEC=e.IDEC WHERE e.IDUE=?
-      GROUP BY e.IDEC,e.INTITULE,e.CREDIT,e.est_actif ORDER BY e.IDEC`, [req.params.id]);
+      GROUP BY e.IDEC,e.INTITULE,e.credits_ec,e.est_actif ORDER BY e.IDEC`, [req.params.id]);
     res.json(components);
   } catch (error) { next(error); }
 });
@@ -147,10 +147,10 @@ router.post('/:id/components', async (req, res, next) => {
     validateEvaluationScales(evaluations);
     const ue = await getUe(req.params.id); if (!ue) return res.status(404).json({ message:'UE introuvable.' });
     const [limits] = await connection.query('SELECT MIN(CREDIT) AS credit_max FROM Programme WHERE IDUE=? AND ANNEE=?', [req.params.id, ue.ANNEE]);
-    const [used] = await connection.query('SELECT COALESCE(SUM(CREDIT),0) AS total FROM ec WHERE IDUE=?', [req.params.id]);
+    const [used] = await connection.query('SELECT COALESCE(SUM(credits_ec),0) AS total FROM ec WHERE IDUE=?', [req.params.id]);
     if (limits[0].credit_max !== null && Number(used[0].total) + Number(credit) > Number(limits[0].credit_max)) return res.status(409).json({ message: `Crédits EC trop élevés : maximum disponible ${Number(limits[0].credit_max) - Number(used[0].total)}.` });
     await connection.beginTransaction();
-    const [created] = await connection.query('INSERT INTO ec (IDUE,INTITULE,CREDIT,created_at,updated_at) VALUES (?,?,?,?,NOW())', [req.params.id, intitule?.trim() || null, credit, new Date()]);
+    const [created] = await connection.query('INSERT INTO ec (IDUE,INTITULE,credits_ec,created_at,updated_at) VALUES (?,?,?,?,NOW())', [req.params.id, intitule?.trim() || null, credit, new Date()]);
     for (const evaluation of evaluations) await connection.query('INSERT INTO ec_evaluation_types (IDEC,type,echelle) VALUES (?,?,?)', [created.insertId, evaluation.type, evaluation.echelle]);
     await connection.commit();
     await audit({ user:req.user, action:'CREATE', module:'STRUCTURE', resourceType:'ec', resourceId:created.insertId, description:'Création EC', newValues:{ ue_id:req.params.id,intitule,credit,evaluations }, request:req });
@@ -170,10 +170,10 @@ router.put('/:id/components/:componentId', async (req, res, next) => {
     if (Number(notes[0].total)) return res.status(409).json({ message:'Modification impossible : cet EC possède déjà des notes.' });
     const ue = await getUe(req.params.id);
     const [limits] = await connection.query('SELECT MIN(CREDIT) AS credit_max FROM Programme WHERE IDUE=? AND ANNEE=?', [req.params.id, ue.ANNEE]);
-    const [used] = await connection.query('SELECT COALESCE(SUM(CREDIT),0) AS total FROM ec WHERE IDUE=? AND IDEC<>?', [req.params.id, req.params.componentId]);
+    const [used] = await connection.query('SELECT COALESCE(SUM(credits_ec),0) AS total FROM ec WHERE IDUE=? AND IDEC<>?', [req.params.id, req.params.componentId]);
     if (limits[0].credit_max !== null && Number(used[0].total) + Number(credit) > Number(limits[0].credit_max)) return res.status(409).json({ message: `Crédits EC trop élevés : maximum disponible ${Number(limits[0].credit_max) - Number(used[0].total)}.` });
     await connection.beginTransaction();
-    await connection.query('UPDATE ec SET INTITULE=?,CREDIT=?,updated_at=NOW() WHERE IDEC=?', [intitule?.trim() || null, credit, req.params.componentId]);
+    await connection.query('UPDATE ec SET INTITULE=?,credits_ec=?,updated_at=NOW() WHERE IDEC=?', [intitule?.trim() || null, credit, req.params.componentId]);
     await connection.query('DELETE FROM ec_evaluation_types WHERE IDEC=?', [req.params.componentId]);
     for (const evaluation of evaluations) await connection.query('INSERT INTO ec_evaluation_types (IDEC,type,echelle) VALUES (?,?,?)', [req.params.componentId, evaluation.type, evaluation.echelle]);
     await connection.commit();

@@ -35,7 +35,12 @@ app.use('/api/academic-locks', require('./routes/academic-lock.routes'));
 app.use('/api/teacher-work', require('./routes/teacher-work.routes'));
 app.use('/api/ec', require('./routes/ec.routes'));
 app.use('/api/ue-management', require('./routes/ue-management.routes'));
+app.use('/api/juries', require('./routes/jury.routes'));
+app.use('/api/deliberation-sessions', require('./routes/deliberation.routes'));
 app.use('/api/deliberations', require('./routes/deliberation.routes'));
+app.use('/api/deliberation-actions', require('./routes/deliberation-action.routes'));
+app.use('/api/deliberation-pv', require('./routes/deliberation-pv.routes'));
+app.use('/api/departments', require('./routes/department.routes'));
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
