@@ -88,6 +88,22 @@ async function moyenneCible(req, res, next) {
   }
 }
 
+async function mgpCible(req, res, next) {
+  try {
+    const { session_id, mgp_cible } = req.body;
+    if (!session_id) return res.status(400).json({ message: 'session_id requis.' });
+    if (mgp_cible === undefined || mgp_cible === null) {
+      return res.status(400).json({ message: 'mgp_cible requise (ex: 2.0, 2.3, 3.0).' });
+    }
+    await assertSessionMembership(session_id, req.user);
+    const result = await deliberationService.executeMgpCible(session_id, req.body, req.user, req);
+    res.status(201).json(result);
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    next(error);
+  }
+}
+
 async function confirmAction(req, res, next) {
   try {
     await assertActionMembership(req.params.id, req.user);
@@ -114,6 +130,7 @@ module.exports = {
   previewAction,
   ajoutPoints,
   moyenneCible,
+  mgpCible,
   confirmAction,
   cancelAction
 };

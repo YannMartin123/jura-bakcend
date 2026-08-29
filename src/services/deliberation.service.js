@@ -77,6 +77,49 @@ const getDecisionLocal = (score100) => {
   return Number(score100) >= 50 ? 'VAL' : 'NV';
 };
 
+/**
+ * Calcule les points exacts à ajouter de manière uniforme sur toutes les UEs
+ * pour qu'un étudiant atteigne la MGP cible fixée par le jury.
+ * @param {Array} ues - Liste des UEs de l'étudiant { IDUE, CREDIT, current: { moyenne, note_sn } }
+ * @param {number} targetMgp - Valeur de la MGP cible (ex: 2.0, 2.3, 3.0)
+ * @returns {number} points uniformes par UE (0 si déjà atteinte ou non atteignable)
+ */
+function calculateUniformPointsForTargetMgp(ues, targetMgp) {
+  if (!ues || ues.length === 0 || !Number.isFinite(targetMgp) || targetMgp <= 0) return 0;
+
+  const totalCredits = ues.reduce((acc, u) => acc + Number(u.CREDIT || 0), 0);
+  if (totalCredits === 0) return 0;
+
+  const currentMgp = round2(
+    ues.reduce((acc, u) => acc + getQdpLocal(u.current.moyenne) * Number(u.CREDIT || 0), 0) / totalCredits
+  );
+
+  if (currentMgp >= targetMgp) return 0;
+
+  // Recherche par pas fin (0.01 pt) des points uniformes minimaux à ajouter à chaque UE
+  // pour que le MGP calculé soit >= targetMgp
+  let bestPoints = 0;
+  for (let p = 0.01; p <= 100.0; p += 0.01) {
+    const pointsRounded = round2(p);
+    let weightedQdpSum = 0;
+
+    for (const u of ues) {
+      const origMoy = u.current.moyenne ?? 0;
+      const simMoy = Math.min(100, round2(origMoy + pointsRounded));
+      const qdp = getQdpLocal(simMoy);
+      weightedQdpSum += qdp * Number(u.CREDIT || 0);
+    }
+
+    const simMgp = round2(weightedQdpSum / totalCredits);
+    if (simMgp >= targetMgp) {
+      bestPoints = pointsRounded;
+      break;
+    }
+  }
+
+  return bestPoints;
+}
+
 // ----------------------------------------------------------------------
 // Évaluation de conditions dynamiques
 // ----------------------------------------------------------------------
@@ -438,12 +481,14 @@ async function previewDeliberationAction(sessionId, params) {
     IDUE = null,
     points_a_ajouter = 0,
     moyenne_cible = null,
+    mgp_cible = null,
     composante_cible = 'GLOBAL',
     composante_sn_only = false
   } = params;
 
   const points = parseFloat(points_a_ajouter || 0);
   const targetMoy = moyenne_cible !== null ? parseFloat(moyenne_cible) : null;
+  const targetMgp = mgp_cible !== null ? parseFloat(mgp_cible) : null;
   const targetUe = IDUE ? ues.find(u => u.IDUE === Number(IDUE)) : null;
 
   const affectedStudents = [];
@@ -609,6 +654,32 @@ async function previewDeliberationAction(sessionId, params) {
             });
           });
         }
+      }
+    } else if (type_action === 'MGP_CIBLE' && targetMgp !== null) {
+      // Délibération par MGP cible : ajout uniforme de points sur TOUTES les UEs
+      const ptsUniform = calculateUniformPointsForTargetMgp(student.ues, targetMgp);
+      if (ptsUniform > 0) {
+        student.ues.forEach(ue => {
+          const oldMoy = ue.current.moyenne ?? 0;
+          const newMoy = Math.min(100, round2(oldMoy + ptsUniform));
+          const oldSn = ue.current.note_sn;
+          const newSn = oldSn !== null ? Math.min(100, round2(oldSn + ptsUniform)) : null;
+
+          beforeState.modifications.push({
+            IDUE: ue.IDUE,
+            CODUE: ue.CODUE,
+            ancienne_moyenne: oldMoy,
+            note_sn_ancien: oldSn
+          });
+
+          afterState.modifications.push({
+            IDUE: ue.IDUE,
+            CODUE: ue.CODUE,
+            points_ajoutes: ptsUniform,
+            nouvelle_moyenne: newMoy,
+            note_sn_nouveau: newSn
+          });
+        });
       }
     }
 
@@ -839,6 +910,116 @@ async function executeMoyenneCible(sessionId, params, user, req = null) {
       resourceType: 'deliberation_actions',
       resourceId: actionId,
       description: `Moyenne cible (${params.moyenne_cible}) appliquée sur la session #${sessionId}`,
+      newValues: { sessionId, actionId, affected_count: preview.affected_students_count },
+      request: req
+    });
+
+    return { success: true, action_id: actionId, preview };
+  } catch (err) {
+    await connection.rollback();
+    throw err;
+  } finally {
+    connection.release();
+  }
+}
+
+// ----------------------------------------------------------------------
+// Exécution d'une action "MGP Cible" (ajustement uniforme sur chaque UE)
+// ----------------------------------------------------------------------
+async function executeMgpCible(sessionId, params, user, req = null) {
+  const session = await getSessionWithDetails(sessionId);
+  if (!session) throw Object.assign(new Error('Session introuvable.'), { status: 404 });
+  if (session.verrouille_par) throw Object.assign(new Error('Session verrouillée.'), { status: 423 });
+  if (!['OUVERTE', 'EN_COURS'].includes(session.statut)) {
+    throw Object.assign(new Error('La session doit être OUVERTE ou EN_COURS pour effectuer des actions.'), { status: 409 });
+  }
+
+  const preview = await previewDeliberationAction(sessionId, {
+    ...params,
+    type_action: 'MGP_CIBLE'
+  });
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const [actionRes] = await connection.query(`
+      INSERT INTO deliberation_actions (
+        session_id, type_action, cible_type, condition_cible, IDUE,
+        points_a_ajouter, moyenne_cible, mgp_cible, composante_sn_only, etudiants_concernes,
+        apercu_avant, apercu_apres, execute_par, date_execution, valide, created_at, updated_at
+      ) VALUES (?, 'MGP_CIBLE', ?, ?, NULL, NULL, NULL, ?, 0, ?, ?, ?, ?, NOW(), 1, NOW(), NOW())
+    `, [
+      sessionId,
+      params.type_cible || 'TOUS',
+      params.condition_cible || null,
+      params.mgp_cible,
+      JSON.stringify(preview.affected_matricules),
+      JSON.stringify(preview.apercu_avant),
+      JSON.stringify(preview.apercu_apres),
+      user.id
+    ]);
+
+    const actionId = actionRes.insertId;
+
+    for (const item of preview.apercu_apres) {
+      const matricule = item.matricule;
+      for (const mod of item.modifications) {
+        const [semRows] = await connection.query(`
+          SELECT ps.IDSEMESTRE FROM programme_semestres ps
+          WHERE ps.IDCLASSE = ? AND ps.IDUE = ? AND ps.ANNEE = ? LIMIT 1
+        `, [session.IDCLASSE, mod.IDUE, session.annee]);
+        const idSemestre = semRows[0]?.IDSEMESTRE || 1;
+
+        await connection.query(`
+          INSERT INTO deliberation_temp_notes (
+            session_id, MATRICULE, IDUE, IDSEMESTRE, ANNEE,
+            ancienne_moyenne, nouvelle_moyenne, points_ajoutes, composante_cible,
+            note_cc_ancien, note_cc_nouveau, note_tp_ancien, note_tp_nouveau,
+            note_sn_ancien, note_sn_nouveau, motif, modifie_par, date_modification,
+            valide, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), 1, NOW(), NOW())
+          ON DUPLICATE KEY UPDATE
+            ancienne_moyenne = VALUES(ancienne_moyenne),
+            nouvelle_moyenne = VALUES(nouvelle_moyenne),
+            points_ajoutes = VALUES(points_ajoutes),
+            composante_cible = VALUES(composante_cible),
+            note_cc_ancien = VALUES(note_cc_ancien),
+            note_cc_nouveau = VALUES(note_cc_nouveau),
+            note_tp_ancien = VALUES(note_tp_ancien),
+            note_tp_nouveau = VALUES(note_tp_nouveau),
+            note_sn_ancien = VALUES(note_sn_ancien),
+            note_sn_nouveau = VALUES(note_sn_nouveau),
+            motif = VALUES(motif),
+            modifie_par = VALUES(modifie_par),
+            date_modification = NOW(),
+            valide = 1,
+            updated_at = NOW()
+        `, [
+          sessionId, matricule, mod.IDUE, idSemestre, session.annee,
+          mod.ancienne_moyenne ?? null, mod.nouvelle_moyenne ?? null, mod.points_ajoutes ?? null,
+          'GLOBAL',
+          null, null, null, null,
+          mod.note_sn_ancien ?? null, mod.note_sn_nouveau ?? null,
+          params.motif || `Délibération jury - MGP cible (${params.mgp_cible})`,
+          user.id
+        ]);
+      }
+    }
+
+    if (session.statut === 'OUVERTE') {
+      await connection.query('UPDATE deliberation_sessions SET statut = "EN_COURS", updated_at = NOW() WHERE id = ?', [sessionId]);
+    }
+
+    await connection.commit();
+
+    await audit({
+      user,
+      action: 'EXECUTE',
+      module: 'JURY',
+      resourceType: 'deliberation_actions',
+      resourceId: actionId,
+      description: `MGP cible (${params.mgp_cible}) appliquée uniformément sur la session #${sessionId}`,
       newValues: { sessionId, actionId, affected_count: preview.affected_students_count },
       request: req
     });
@@ -1507,6 +1688,7 @@ module.exports = {
   previewDeliberationAction,
   executeAjoutPoints,
   executeMoyenneCible,
+  executeMgpCible,
   confirmAction,
   cancelAction,
   openSession,

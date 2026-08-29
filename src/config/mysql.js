@@ -1,5 +1,7 @@
 const mysql = require('mysql2/promise');
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 // Pool de connexions (pas de connexion unique) : chaque requete emprunte une
 // connexion au pool et la restitue ensuite. Evite d'ouvrir/fermer une

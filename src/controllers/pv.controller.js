@@ -1039,3 +1039,138 @@ exports.generatePvRecapClasse = async (req, res) => {
     }
   }
 };
+
+// ============================================================================
+// OPTIONS DE TIRAGE PV SELON PROFIL ET PERMISSIONS
+// GET /api/pv/options
+// ============================================================================
+exports.getPvOptions = async (req, res) => {
+  try {
+    const user = req.user;
+    const isAdmin = ['SUPER_ADMIN', 'ADMIN_ACADEMIQUE'].includes(user.role);
+    const isTeacher = user.role === 'ENSEIGNANT';
+    const isJury = user.role === 'JURY';
+
+    // 1. Années académiques
+    const years = await query('SELECT annee, est_active FROM academic_years ORDER BY annee DESC');
+    const activeYear = years.find(y => y.est_active)?.annee || years[0]?.annee;
+
+    // 2. Grades
+    const grades = await query('SELECT CODGRADE, INTITULE FROM Grade ORDER BY CODGRADE ASC');
+
+    // 3. Classes
+    let classesSql = `
+      SELECT c.IDCLASSE, c.NIVEAU, c.CODGRADE,
+             f.NOM AS FILIERE_NOM, f.CODFILIERE,
+             s.INTITULE AS SPECIALITE_INTITULE, g.INTITULE AS GRADE_INTITULE
+      FROM Classe c
+      LEFT JOIN Filiere f ON f.IDFILIERE = c.IDFILIERE
+      LEFT JOIN Specialite s ON s.IDSPECIALITE = c.IDSPECIALITE
+      LEFT JOIN Grade g ON g.CODGRADE = c.CODGRADE
+      WHERE 1=1
+    `;
+    const classesParams = [];
+
+    if (isTeacher) {
+      classesSql += ` AND (
+        c.IDCLASSE IN (SELECT IDCLASSE FROM teacher_ue_assignments WHERE user_id = ?)
+        OR c.IDCLASSE IN (SELECT IDCLASSE FROM jury WHERE president_id = ? OR id IN (SELECT jury_id FROM jury_membres WHERE user_id = ?))
+      )`;
+      classesParams.push(user.id, user.id, user.id);
+    } else if (isJury) {
+      classesSql += ` AND c.IDCLASSE IN (
+        SELECT IDCLASSE FROM jury WHERE president_id = ? OR id IN (SELECT jury_id FROM jury_membres WHERE user_id = ?)
+      )`;
+      classesParams.push(user.id, user.id);
+    }
+
+    classesSql += ' ORDER BY f.NOM, c.NIVEAU, c.IDCLASSE';
+    const classes = await query(classesSql, classesParams);
+
+    // 4. UEs affectées (pour les enseignants) ou toutes les UEs programmées
+    let assignedUes = [];
+    if (isTeacher) {
+      assignedUes = await query(`
+        SELECT a.id, a.user_id, a.IDCLASSE, a.IDUE, a.ANNEE,
+               u.CODUE, u.INTITULE, p.CREDIT, ps.IDSEMESTRE,
+               c.NIVEAU, c.CODGRADE, f.NOM AS FILIERE_NOM, s.INTITULE AS SPECIALITE_INTITULE
+        FROM teacher_ue_assignments a
+        JOIN UE u ON u.IDUE = a.IDUE
+        JOIN Classe c ON c.IDCLASSE = a.IDCLASSE
+        LEFT JOIN Filiere f ON f.IDFILIERE = c.IDFILIERE
+        LEFT JOIN Specialite s ON s.IDSPECIALITE = c.IDSPECIALITE
+        LEFT JOIN Programme p ON p.IDCLASSE = a.IDCLASSE AND p.IDUE = a.IDUE AND p.ANNEE = a.ANNEE
+        LEFT JOIN programme_semestres ps ON ps.IDCLASSE = a.IDCLASSE AND ps.IDUE = a.IDUE AND ps.ANNEE = a.ANNEE
+        WHERE a.user_id = ?
+        ORDER BY a.ANNEE DESC, f.NOM, c.NIVEAU, u.CODUE
+      `, [user.id]);
+    } else {
+      assignedUes = await query(`
+        SELECT DISTINCT p.IDCLASSE, p.IDUE, p.ANNEE,
+               u.CODUE, u.INTITULE, p.CREDIT, ps.IDSEMESTRE,
+               c.NIVEAU, c.CODGRADE, f.NOM AS FILIERE_NOM, s.INTITULE AS SPECIALITE_INTITULE
+        FROM Programme p
+        JOIN UE u ON u.IDUE = p.IDUE
+        JOIN Classe c ON c.IDCLASSE = p.IDCLASSE
+        LEFT JOIN Filiere f ON f.IDFILIERE = c.IDFILIERE
+        LEFT JOIN Specialite s ON s.IDSPECIALITE = c.IDSPECIALITE
+        LEFT JOIN programme_semestres ps ON ps.IDCLASSE = p.IDCLASSE AND ps.IDUE = p.IDUE AND ps.ANNEE = p.ANNEE
+        ORDER BY p.ANNEE DESC, f.NOM, c.NIVEAU, u.CODUE
+      `);
+    }
+
+    // 5. Jurys accessibles
+    let jurysSql = `
+      SELECT j.id, j.nom, j.IDCLASSE, j.annee, j.president_id, j.statut,
+             c.NIVEAU, c.CODGRADE, f.NOM AS FILIERE_NOM
+      FROM jury j
+      LEFT JOIN Classe c ON c.IDCLASSE = j.IDCLASSE
+      LEFT JOIN Filiere f ON f.IDFILIERE = c.IDFILIERE
+      WHERE 1=1
+    `;
+    const jurysParams = [];
+    if (!isAdmin) {
+      jurysSql += ` AND (j.president_id = ? OR j.id IN (SELECT jury_id FROM jury_membres WHERE user_id = ?))`;
+      jurysParams.push(user.id, user.id);
+    }
+    jurysSql += ' ORDER BY j.annee DESC, j.nom ASC';
+    const jurys = await query(jurysSql, jurysParams);
+
+    // 6. Sessions de délibération accessibles
+    let sessionsSql = `
+      SELECT s.id, s.jury_id, s.nom_session, s.statut, s.date_debut, s.date_cloture,
+             j.nom AS jury_nom, j.IDCLASSE, j.annee,
+             c.NIVEAU, c.CODGRADE, f.NOM AS FILIERE_NOM
+      FROM deliberation_sessions s
+      JOIN jury j ON j.id = s.jury_id
+      LEFT JOIN Classe c ON c.IDCLASSE = j.IDCLASSE
+      LEFT JOIN Filiere f ON f.IDFILIERE = c.IDFILIERE
+      WHERE 1=1
+    `;
+    const sessionsParams = [];
+    if (!isAdmin) {
+      sessionsSql += ` AND (j.president_id = ? OR j.id IN (SELECT jury_id FROM jury_membres WHERE user_id = ?))`;
+      sessionsParams.push(user.id, user.id);
+    }
+    sessionsSql += ' ORDER BY s.created_at DESC, s.id DESC';
+    const sessions = await query(sessionsSql, sessionsParams);
+
+    res.json({
+      userRole: user.role,
+      activeYear,
+      years,
+      grades,
+      classes,
+      assignedUes,
+      jurys,
+      sessions,
+      canGenerateAll: isAdmin,
+      canGenerateRecapClasse: isAdmin || isJury,
+      canGenerateRecapCycle: isAdmin || isJury,
+      canGenerateUe: true
+    });
+  } catch (error) {
+    console.error('Erreur getPvOptions:', error);
+    res.status(500).json({ message: 'Erreur lors du chargement des options de PV', error: error.message });
+  }
+};

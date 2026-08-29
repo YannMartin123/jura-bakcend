@@ -7,6 +7,9 @@ const { requireUeAssignment } = require('../middleware/ue-assignment');
 
 router.use(authenticateToken);
 
+// Options de tirage disponibles selon profil & permissions
+router.get('/options', pvController.getPvOptions);
+
 // PV global d'une UE pour une classe (roster + moyennes + stats par decision)
 router.post('/generate-ue', requirePermission('pv.ue.generate'), requireUeAssignment, pvController.generatePvUe);
 

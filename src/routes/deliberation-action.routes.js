@@ -10,6 +10,7 @@ router.use(authenticateToken);
 router.post('/preview', requirePermission('deliberation.execute'), actionController.previewAction);
 router.post('/ajout-points', requirePermission('deliberation.execute'), actionController.ajoutPoints);
 router.post('/moyenne-cible', requirePermission('deliberation.execute'), actionController.moyenneCible);
+router.post('/mgp-cible', requirePermission('deliberation.execute'), actionController.mgpCible);
 router.post('/:id/confirmer', requirePermission('deliberation.execute'), actionController.confirmAction);
 router.post('/:id/annuler', requirePermission('deliberation.execute'), actionController.cancelAction);
 
